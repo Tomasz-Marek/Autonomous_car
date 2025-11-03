@@ -51,6 +51,26 @@ Both algorithms work **without machine learning** — the system relies solely o
   - Speed limits  
   - Mandatory signs (blue circular)
 
+## 📥 Inputs / 📤 Outputs
+
+**Lane detection (`Line_detect.py`):**
+- **Input:** static road image (currently `Linia_drogi/droga2.png`).
+- **Processing:** HSV thresholding → perspective warp → column histogram.
+- **Output (for now):**
+  - Debug windows (`Warped`, `Warped Points`, histograms),
+  - Printed curve/center value in console (used later for steering logic).
+
+**Traffic sign detection (`Sign_detect.py`):**
+- **Input:** live video from laptop camera (index `0` by default).
+- **Processing:**
+  - Edge and contour detection,
+  - Shape classification (triangle / circle / octagon),
+  - Dominant color (HSV),
+  - ORB matching against image database in `baza_do_porownania/`.
+- **Output:**
+  - Live window with detected sign contour and text label (e.g. `STOP (92%)`),
+  - Optional debug windows (edges, ROI, ORB matching preview).
+
 ---
 
 ## 🧠 Technologies Used
@@ -62,6 +82,23 @@ Both algorithms work **without machine learning** — the system relies solely o
 - **Jupyter Notebook** (for prototyping and testing)
 
 > No machine learning or deep learning techniques are used in this project.
+
+---
+
+## ⚠️ Known Limitations (WIP)
+
+- Lane detection currently works on a **single static image** only (no video yet).
+- Sign detection is tuned for a specific lighting setup and camera; thresholds may require manual tuning.
+- The traffic sign database in `baza_do_porownania/` is limited and does not cover all possible signs.
+- Control logic (steering/throttle) and Raspberry Pi integration are **not implemented yet**.
+- No automated tests yet — most validation is done visually via debug windows.
+
+---
+## 📝 Changelog (recent)
+
+- 2025-11-03: Documented lane and sign detection modules, added WIP limitations.
+- 2025-11-02: Improved traffic sign classifier (shape + color → ORB group selection).
+- 2025-11-01: Initial version of lane detection on static image (`droga2.png`).
 
 ---
 
