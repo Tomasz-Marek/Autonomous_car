@@ -103,4 +103,16 @@ Both algorithms work **without machine learning** — the system relies solely o
 ---
 
 ## 🗂️ Repository Structure
-
+Autonomous_car/
+├── Python_codes/
+│ ├── Line_detect.py
+│ ├── Sign_detect.py
+├── Linia_drogi/
+│ ├── droga2.png
+├── baza_do_porownania/
+│ ├── STOP/
+│ ├── NAKAZ/
+│ ├── OSTRZEGAWCZE/
+│ ├── OGRANICZENIA/
+├── README.md
+├── requirements.txt
