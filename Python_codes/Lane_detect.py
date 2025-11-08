@@ -31,6 +31,16 @@ confidence_right = 0.0
 curveList = []
 CURVELIST_LENGTH = 10
 
+def time_to_exec(func):
+    """Decorator to measure execution time of functions."""
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        exec_time = end_time - start_time
+        print(f"Execution time of {func.__name__}: {exec_time:.6f} seconds")
+        return result
+    return wrapper
 
 def nothing(a):
     """Dummy callback for OpenCV trackbars (does nothing)."""
@@ -478,7 +488,7 @@ def getLaneCurve(img):
 
 
 # ====================== ENTRY POINT ======================
-img = cv2.imread('road_images/crossroad.png')
+img = cv2.imread('road_images/road2.png')
 img = cv2.resize(img, (480, 240))
 
 if DEBUG:
@@ -486,8 +496,9 @@ if DEBUG:
     initializeTrackbars(initialTrackbarValues, wT=480, hT=240)
 
 while True:
-    getLaneCurve(img)
-
+    # Clean terminal output
+    print("\033c", end="")
+    time_to_exec(getLaneCurve)(img)
     if cv2.waitKey(30) & 0xFF == ord('q'):
         break
 

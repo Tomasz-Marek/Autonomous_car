@@ -173,6 +173,7 @@ Autonomous_car/
 - [x] Electrical components selection
 - [x] Lane detection using static image
 - [x] Traffic sign detection using camera
+- [x] Left and right lane detection confidance
 - [ ] Crossroads detection in Lane detection code
 - [ ] Integrate both systems into one module
 - [ ] Implement Raspberry Pi support (camera + motor control)
