@@ -6,7 +6,15 @@ import time
 # ====================== GLOBAL CONFIG ======================
 DEBUG = True
 DISPLAY = True
+# ====================== MOST VALUABLE DATA ======================
+# "curve": curve,
+# "offset": norm_middlePoint_full_roi,
+# "poly": (a, b, c),
+# "lane_ok": lane_ok,
+# "left_lane_ok": left_lane_ok,
+# "right_lane_ok": right_lane_ok,
 
+#======================= PARAMS ======================
 # HSV threshold parameters for lane marking detection
 h_min = 0
 s_min = 0
@@ -14,7 +22,12 @@ v_min = 150
 h_max = 179
 s_max = 255
 v_max = 255
-
+left_lane_ok = False
+right_lane_ok = False
+lanes_detected = False
+threshold_lane_detect = 0.05
+confidence_left = 0.0
+confidence_right = 0.0
 curveList = []
 CURVELIST_LENGTH = 10
 
@@ -52,6 +65,39 @@ def roi_segment(img, vertices=3):
 
     return rois, centers_y
 
+def energy_in_roi(left_half, right_half, h_roi, midpoint, w_roi):
+    global left_lane_ok, right_lane_ok, lanes_detected, threshold_lane_detect, confidence_left, confidence_right
+    """ Calculate normalized energy in left and right halves of the ROI.
+    Args:
+        left_half (np.ndarray): Pixel values of the left half.
+        right_half (np.ndarray): Pixel values of the right half.
+        h_roi (int): Height of the ROI.
+        midpoint (int): Midpoint column index.
+        w_roi (int): Width of the ROI.
+
+    Returns:
+        tuple: (normalized_left_energy, normalized_right_energy)
+    """
+    left_energy_sum  = np.sum(left_half)
+    right_energy_sum = np.sum(right_half)
+
+    # Max theoretical energy per half (all pixels = 255)
+    max_left_energy  = h_roi * midpoint * 255
+    max_right_energy = h_roi * (w_roi - midpoint) * 255
+
+    normalized_left_energy  = left_energy_sum  / max_left_energy  if max_left_energy  > 0 else 0.0
+    normalized_right_energy = right_energy_sum / max_right_energy if max_right_energy > 0 else 0.0
+
+    confidence_left = min(normalized_left_energy / threshold_lane_detect, 1.0)
+    confidence_right = min(normalized_right_energy / threshold_lane_detect, 1.0)
+
+
+    left_lane_ok  = normalized_left_energy  > threshold_lane_detect
+    right_lane_ok = normalized_right_energy > threshold_lane_detect
+    lanes_detected = left_lane_ok and right_lane_ok
+
+    return normalized_left_energy, normalized_right_energy
+
 
 def getHistogram(img, minPer=0.1, display=None, region=1):
     """
@@ -77,25 +123,32 @@ def getHistogram(img, minPer=0.1, display=None, region=1):
         display = DISPLAY
 
     h, w = img.shape[:2]
-
+    
     # Region Of Interest based on region parameter
     if region == 1:
         roi = img
     else:
         start_row = h - h // region
         roi = img[start_row:, :]
-
+    h_roi, w_roi = roi.shape[:2]
     # Column-wise histogram (sum of pixel values in each column)
     hisValues = np.sum(roi, axis=0)
-    midpoint = w // 2
+    midpoint = w_roi // 2
     left_half = hisValues[:midpoint]
     right_half = hisValues[midpoint:]
 
+    if region == 4:
+        # For region=4, set global line detect flags based on energy
+        energy_left, energy_right = energy_in_roi(left_half, right_half, h_roi, midpoint, w_roi)
+    else:
+        energy_left, energy_right = 0.0, 0.0
     # Fallback to image center if one side has no lane pixels
     if left_half.max() == 0 or right_half.max() == 0:
         basePoint = midpoint
         imgHist = np.zeros((h, w, 3), np.uint8) if display else None
-        return basePoint, imgHist
+        return basePoint, imgHist, energy_left, energy_right
+
+    
 
     # Prediction mode (region == 1): weighted centroid on both halves
     if region == 1:
@@ -118,6 +171,7 @@ def getHistogram(img, minPer=0.1, display=None, region=1):
         # Current position mode (region != 1): use strongest peaks only
         left_mean = np.argmax(left_half)
         right_mean = np.argmax(right_half) + midpoint
+        
 
     # Lane center: average between left and right lane positions
     basePoint = int((int(round(left_mean)) + int(round(right_mean))) // 2)
@@ -137,7 +191,7 @@ def getHistogram(img, minPer=0.1, display=None, region=1):
         cv2.circle(imgHist, (rx, h), 6, (255, 0, 0), cv2.FILLED)
         cv2.circle(imgHist, (basePoint, h), 8, (0, 255, 255), cv2.FILLED)
 
-    return basePoint, imgHist
+    return basePoint, imgHist, energy_left, energy_right
 
 
 # ====================== TRACKBARS ======================
@@ -351,13 +405,13 @@ def getLaneCurve(img):
 
     # 5. Histograms:
     #    - full warped: current bottom lane center (region=4) + global prediction (region=1)
-    middlePoint_full_roi, img_midHist = getHistogram(imgWarp, minPer=0.5, display=DISPLAY, region=4)
-    curveAveragePoint_full_roi, img_CurveHist = getHistogram(imgWarp, minPer=0.5, display=DISPLAY, region=1)
+    middlePoint_full_roi, img_midHist, energy_left, energy_right = getHistogram(imgWarp, minPer=0.5, display=DISPLAY, region=4)
+    curveAveragePoint_full_roi, img_CurveHist, _ , _= getHistogram(imgWarp, minPer=0.5, display=DISPLAY, region=1)
 
     #    - separate centers for top/middle/bottom ROIs (no debug images)
-    curveAveragePoint_top_roi, _ = getHistogram(roi_top, minPer=0.5, display=False, region=1)
-    curveAveragePoint_middle_roi, _ = getHistogram(roi_middle, minPer=0.5, display=False, region=1)
-    curveAveragePoint_bottom_roi, _ = getHistogram(roi_bottom, minPer=0.5, display=False, region=1)
+    curveAveragePoint_top_roi, _, _, _ = getHistogram(roi_top, minPer=0.5, display=False, region=1)
+    curveAveragePoint_middle_roi, _, _, _ = getHistogram(roi_middle, minPer=0.5, display=False, region=1)
+    curveAveragePoint_bottom_roi, _, _, _ = getHistogram(roi_bottom, minPer=0.5, display=False, region=1)
 
     # Normalized versions (x in [-1,1], y in [0,1])
     norm_middlePoint_full_roi, norm_y_middlePoint_full_roi = normalize_range_points(middlePoint_full_roi, h, w, h)
@@ -402,7 +456,14 @@ def getLaneCurve(img):
         y_fit_px = y_fit * h
         for x_px, y_px in zip(x_fit_px.astype(int), y_fit_px.astype(int)):
             cv2.circle(imgWarpPoints, (x_px, int(y_px)), 2, (0, 255, 255), -1)
-
+        # Write lanes status on imgWarpPoints
+        cv2.putText(imgWarp, "left lane %r" % left_lane_ok, (150, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1) # Blue color text
+        cv2.putText(imgWarp, "right lane %r" % right_lane_ok, (150, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
+        cv2.putText(imgWarp, "Are lanes detected %r" % lanes_detected, (150, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
+        cv2.putText(imgWarp, "left energy %.3f" % energy_left, (150, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
+        cv2.putText(imgWarp, "left confidence %.1f%%" % (confidence_left*100), (150, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
+        cv2.putText(imgWarp, "right energy %.3f" % energy_right, (150, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
+        cv2.putText(imgWarp, "right confidence %.1f%%" % (confidence_right*100), (150, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
         # Debug views
         imgMainView = drawPoints(img.copy(), points)
         cv2.circle(imgMainView, (middlePoint_full_roi, img.shape[0] - 10), 10, (0, 255, 255), cv2.FILLED)
