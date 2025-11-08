@@ -22,6 +22,13 @@ v_min = 150
 h_max = 179
 s_max = 255
 v_max = 255
+# progi do wykrywania skrzyżowań (będą sterowane z trackbarów)
+k_center_energy = 0.06   # ile energii w środku = "wypełniony środek"
+k_side_energy   = 0.04   # minimalna energia boku aby uznać że pas istnieje
+k_peak_sim      = 0.5    # podobieństwo pików (0..1)
+spread_branch   = 0.30   # spread > 0.25 => szeroka odnoga
+spread_lane     = 0.30   # spread < 0.10 => typowy wąski pas
+
 left_lane_ok = False
 right_lane_ok = False
 lanes_detected = False
@@ -31,6 +38,24 @@ confidence_left = 0.0
 confidence_right = 0.0
 curveList = []
 CURVELIST_LENGTH = 10
+
+def initializeCrossroadTrackbars():
+    """
+    Window + trackbars for tuning crossroad detection thresholds:
+      - k_center_energy
+      - k_side_energy
+      - k_peak_sim
+    """
+    cv2.namedWindow("Crossroad_Debug")
+    cv2.resizeWindow("Crossroad_Debug", 500, 300)
+
+    # trackbary 0..100 -> 0.00 .. 1.00
+    cv2.createTrackbar("k_center x100", "Crossroad_Debug", int(k_center_energy * 100), 100, nothing)
+    cv2.createTrackbar("k_side   x100", "Crossroad_Debug", int(k_side_energy * 100),   100, nothing)
+    cv2.createTrackbar("k_peak   x100", "Crossroad_Debug", int(k_peak_sim * 100),      100, nothing)
+    cv2.createTrackbar("spread branch x100", "Crossroad_Debug", int(spread_branch * 100), 100, nothing)
+    cv2.createTrackbar("spread lane   x100", "Crossroad_Debug", int(spread_lane * 100),   100, nothing)
+
 
 def time_to_exec(func):
     """Decorator to measure execution time of functions."""
@@ -76,63 +101,6 @@ def roi_segment(img, vertices=3):
 
     return rois, centers_y
 
-def crossroad_in_roi(hisValues, left_mean, right_mean, h_roi, w_roi):
-    """
-    Analize 1D histogram in IPM bottom ROI and try to detect crossroad type.
-
-    Args:
-        hisValues (np.ndarray): 1D histogram (sum over columns) for ROI.
-        left_mean (float): x-position of left lane peak (in histogram index space).
-        right_mean (float): x-position of right lane peak.
-        h_roi (int): ROI height in pixels.
-        w_roi (int): ROI width  in pixels (should match len(hisValues)).
-
-    Side effects:
-        Sets global variable `crossroad_type` to one of:
-          - "X_crossroad"
-          - "T_crossroad"
-          - "L_turn-straight"  (straight + left branch)
-          - "R_turn-straight"  (straight + right branch)
-          - "not_detected"
-    """
-    global crossroad_type
-
-    # --- tunable thresholds ---
-    k_center_energy = 0.08   # how much center energy means "center filled"
-    k_side_energy   = 0.07   # minimal side energy to treat lane as present
-    k_peak_sim      = 0.7    # similarity factor for peaks (0 = identical, 1 = anything)
-    spread_branch   = 0.25   # spread above this => likely a wide branch
-    spread_lane     = 0.10   # typical narrow lane spread upper bound
-
-    # --- safety & indexing ---
-    w_hist = len(hisValues)
-    if w_hist == 0:
-        crossroad_type = "not_detected"
-        return None
-
-    left_i  = int(round(left_mean))
-    right_i = int(round(right_mean))
-
-    # Clamp indices to valid range and ensure right_i > left_i
-    left_i  = max(1, min(left_i,  w_hist - 2))
-    right_i = max(left_i + 1, min(right_i, w_hist - 1))
-
-    # --- split histogram into 3 regions ---
-    left_section   = hisValues[:left_i]
-    center_section = hisValues[left_i:right_i]
-    right_section  = hisValues[right_i:]
-
-    left_width   = max(len(left_section),   1)
-    center_width = max(len(center_section), 1)
-    right_width  = max(len(right_section),  1)
-
-    # --- small helpers ---
-
-    def section_energy(section, width):
-        energy = float(np.sum(section))
-        max_energy = float(h_roi * width * 255)
-        norm = energy / max_energy if max_energy > 0 else 0.0
-        return energy, norm
 
 def crossroad_in_roi(hisValues, left_mean, right_mean, h_roi, w_roi):
     """
@@ -144,16 +112,17 @@ def crossroad_in_roi(hisValues, left_mean, right_mean, h_roi, w_roi):
         - "L_turn-straight"
         - "R_turn-straight"
         - "not_detected"
+
+    Dodatkowo rysuje okno "Crossroad_Debug" z bieżącymi parametrami.
     """
-    global crossroad_type
+    global crossroad_type, k_center_energy, k_side_energy, k_peak_sim, spread_branch, spread_lane
 
-    # --- progi do strojenia ---
-    k_center_energy = 0.08   # ile energii w środku = "wypełniony środek"
-    k_side_energy   = 0.07   # minimalna energia boku aby uznać że pas istnieje
-    k_peak_sim      = 0.7    # jak bardzo piki mogą się różnić i dalej być "podobne"
-
-    spread_branch   = 0.25   # spread > 0.25 => szeroka odnoga
-    spread_lane     = 0.10   # spread < 0.10 => typowy wąski pas
+    # --- odczyt progów z trackbarów (0..100 -> 0.00..1.00) ---
+    k_center_energy = cv2.getTrackbarPos("k_center x100", "Crossroad_Debug") / 100.0
+    k_side_energy   = cv2.getTrackbarPos("k_side   x100", "Crossroad_Debug") / 100.0
+    k_peak_sim      = cv2.getTrackbarPos("k_peak   x100", "Crossroad_Debug") / 100.0
+    spread_branch   = cv2.getTrackbarPos("spread branch x100", "Crossroad_Debug") / 100.0
+    spread_lane     = cv2.getTrackbarPos("spread lane   x100", "Crossroad_Debug") / 100.0
 
     # --- bezpieczeństwo indeksów ---
     w_hist = len(hisValues)
@@ -176,7 +145,6 @@ def crossroad_in_roi(hisValues, left_mean, right_mean, h_roi, w_roi):
     center_width = max(len(center_section), 1)
     right_width  = max(len(right_section),  1)
 
-    # helpers
     def section_energy(section, width):
         energy = float(np.sum(section))
         max_energy = float(h_roi * width * 255)
@@ -223,60 +191,74 @@ def crossroad_in_roi(hisValues, left_mean, right_mean, h_roi, w_roi):
     left_is_lane  = spread_left  < spread_lane
     right_is_lane = spread_right < spread_lane
 
-    if DEBUG:
-        print("Crossroad Detection Debug Info:")
-        print(f"  Energies (norm): L={norm_left:.3f}, C={norm_center:.3f}, R={norm_right:.3f}")
-        print(f"  Spreads:         L={spread_left:.3f}, C={spread_center:.3f}, R={spread_right:.3f}")
-        print(f"  Peaks:           L={left_peak:.1f}, R={right_peak:.1f}, diff={peak_diff:.1f}, similar={peaks_similar}")
-        print(f"  Filled flags:    L={left_section_filled}, C={center_section_filled}, R={right_section_filled}")
-        print(f"  Lane-like:       L={left_is_lane}, R={right_is_lane}")
-        print(f"  Branch-like:     L={left_is_branch}, R={right_is_branch}")
-
     # ----------------- KLASYFIKACJA WG TWOICH ZASAD -----------------
 
-    # 1) X_crossroad:
-    #    - środek NIE wypełniony
-    #    - piki podobne
-    #    - brak odnóg (boki wyglądają jak zwykłe, wąskie pasy)
+    # 1) X_crossroad: środek pusty, piki podobne, oba boki jak pasy
     if (not center_section_filled and
         peaks_similar and
-        left_is_branch and right_is_branch):
+        left_is_lane and right_is_lane):
         crossroad_type = "X_crossroad"
-        return None
-
-    # 2) T_crossroad:
-    #    - środek WYPEŁNIONY
-    #    - podobne piki
-    #    - płaskie / szerokie odnogi po lewej i prawej
-    if (center_section_filled and
-        peaks_similar and
-        left_is_branch and right_is_branch):
+    # 2) T_crossroad: środek wypełniony, piki podobne, szerokie odnogi po obu stronach
+    elif (center_section_filled and
+          peaks_similar and
+          left_is_branch and right_is_branch):
         crossroad_type = "T_crossroad"
-        return None
-
-    # 3) L_turn-straight:
-    #    - środek pusty
-    #    - piki NIE są podobne
-    #    - płaska odnoga tylko po LEWEJ
-    if (not center_section_filled and
-        left_section_filled and left_is_branch and
-        right_section_filled and not right_is_branch):
+    # 3) L_turn-straight: środek pusty, piki różne, szeroka odnoga tylko po lewej
+    elif (not center_section_filled and
+          not peaks_similar and
+          left_section_filled and left_is_branch and
+          right_section_filled and right_is_lane):
         crossroad_type = "L_turn-straight"
-        return None
-
-    # 4) R_turn-straight:
-    #    - środek pusty
-    #    - piki NIE są podobne
-    #    - płaska odnoga tylko po PRAWEJ
-    if (not center_section_filled and
-        right_section_filled and right_is_branch and
-        left_section_filled and not left_is_branch):
+    # 4) R_turn-straight: środek pusty, piki różne, szeroka odnoga tylko po prawej
+    elif (not center_section_filled and
+          not peaks_similar and
+          right_section_filled and right_is_branch and
+          left_section_filled and left_is_lane):
         crossroad_type = "R_turn-straight"
-        return None
+    else:
+        crossroad_type = "not_detected"
 
-    # nic z powyższych
-    crossroad_type = "not_detected"
+    # ----------------- OKNO DEBUG -----------------
+    debug_img = np.zeros((260, 500, 3), np.uint8)
+
+    y = 20
+    dy = 20
+
+    cv2.putText(debug_img, f"k_center={k_center_energy:.2f}  k_side={k_side_energy:.2f}  k_peak={k_peak_sim:.2f}",
+                (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 255), 1)
+    y += dy
+
+    cv2.putText(debug_img, f"Energies: L={norm_left:.3f}  C={norm_center:.3f}  R={norm_right:.3f}",
+                (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+    y += dy
+
+    cv2.putText(debug_img, f"Spreads : L={spread_left:.3f}  C={spread_center:.3f}  R={spread_right:.3f}",
+                (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+    y += dy
+
+    cv2.putText(debug_img, f"Peaks   : L={left_peak:.0f}  R={right_peak:.0f}  diff={peak_diff:.0f}  similar={peaks_similar}",
+                (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 1)
+    y += dy
+
+    cv2.putText(debug_img, f"Filled  : L={left_section_filled}  C={center_section_filled}  R={right_section_filled}",
+                (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 255, 200), 1)
+    y += dy
+
+    cv2.putText(debug_img, f"Lane    : L={left_is_lane}  R={right_is_lane}",
+                (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 255), 1)
+    y += dy
+
+    cv2.putText(debug_img, f"Branch  : L={left_is_branch}  R={right_is_branch}",
+                (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 150, 150), 1)
+    y += dy
+
+    cv2.putText(debug_img, f"TYPE: {crossroad_type}",
+                (10, y+10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+
+    cv2.imshow("Crossroad_Debug", debug_img)
+
     return None
+
 
 
 
@@ -695,13 +677,13 @@ def getLaneCurve(img):
 
 
 # ====================== ENTRY POINT ======================
-img = cv2.imread('road_images/road2.png')
+img = cv2.imread('road_images/crossroad-right.png')
 img = cv2.resize(img, (480, 240))
 
 if DEBUG:
     initialTrackbarValues = [140, 240, 116, 240]  # initial trapezoid parameters
     initializeTrackbars(initialTrackbarValues, wT=480, hT=240)
-
+    initializeCrossroadTrackbars()
 while True:
     # Clean terminal output
     print("\033c", end="")
