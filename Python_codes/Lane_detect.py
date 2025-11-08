@@ -25,6 +25,7 @@ v_max = 255
 left_lane_ok = False
 right_lane_ok = False
 lanes_detected = False
+crossroad_type = "not_detected"  # "not_detected", "T_crossroad", "X_crossroad" ,"L_turn-straight", "R_turn-straight"
 threshold_lane_detect = 0.05
 confidence_left = 0.0
 confidence_right = 0.0
@@ -74,6 +75,211 @@ def roi_segment(img, vertices=3):
         centers_y.append(y_center)
 
     return rois, centers_y
+
+def crossroad_in_roi(hisValues, left_mean, right_mean, h_roi, w_roi):
+    """
+    Analize 1D histogram in IPM bottom ROI and try to detect crossroad type.
+
+    Args:
+        hisValues (np.ndarray): 1D histogram (sum over columns) for ROI.
+        left_mean (float): x-position of left lane peak (in histogram index space).
+        right_mean (float): x-position of right lane peak.
+        h_roi (int): ROI height in pixels.
+        w_roi (int): ROI width  in pixels (should match len(hisValues)).
+
+    Side effects:
+        Sets global variable `crossroad_type` to one of:
+          - "X_crossroad"
+          - "T_crossroad"
+          - "L_turn-straight"  (straight + left branch)
+          - "R_turn-straight"  (straight + right branch)
+          - "not_detected"
+    """
+    global crossroad_type
+
+    # --- tunable thresholds ---
+    k_center_energy = 0.08   # how much center energy means "center filled"
+    k_side_energy   = 0.07   # minimal side energy to treat lane as present
+    k_peak_sim      = 0.7    # similarity factor for peaks (0 = identical, 1 = anything)
+    spread_branch   = 0.25   # spread above this => likely a wide branch
+    spread_lane     = 0.10   # typical narrow lane spread upper bound
+
+    # --- safety & indexing ---
+    w_hist = len(hisValues)
+    if w_hist == 0:
+        crossroad_type = "not_detected"
+        return None
+
+    left_i  = int(round(left_mean))
+    right_i = int(round(right_mean))
+
+    # Clamp indices to valid range and ensure right_i > left_i
+    left_i  = max(1, min(left_i,  w_hist - 2))
+    right_i = max(left_i + 1, min(right_i, w_hist - 1))
+
+    # --- split histogram into 3 regions ---
+    left_section   = hisValues[:left_i]
+    center_section = hisValues[left_i:right_i]
+    right_section  = hisValues[right_i:]
+
+    left_width   = max(len(left_section),   1)
+    center_width = max(len(center_section), 1)
+    right_width  = max(len(right_section),  1)
+
+    # --- small helpers ---
+
+    def section_energy(section, width):
+        energy = float(np.sum(section))
+        max_energy = float(h_roi * width * 255)
+        norm = energy / max_energy if max_energy > 0 else 0.0
+        return energy, norm
+
+def crossroad_in_roi(hisValues, left_mean, right_mean, h_roi, w_roi):
+    """
+    Analiza histogramu w dolnym ROI i próba wykrycia typu skrzyżowania.
+
+    Ustawia globalny crossroad_type na jeden z:
+        - "X_crossroad"
+        - "T_crossroad"
+        - "L_turn-straight"
+        - "R_turn-straight"
+        - "not_detected"
+    """
+    global crossroad_type
+
+    # --- progi do strojenia ---
+    k_center_energy = 0.08   # ile energii w środku = "wypełniony środek"
+    k_side_energy   = 0.07   # minimalna energia boku aby uznać że pas istnieje
+    k_peak_sim      = 0.7    # jak bardzo piki mogą się różnić i dalej być "podobne"
+
+    spread_branch   = 0.25   # spread > 0.25 => szeroka odnoga
+    spread_lane     = 0.10   # spread < 0.10 => typowy wąski pas
+
+    # --- bezpieczeństwo indeksów ---
+    w_hist = len(hisValues)
+    if w_hist == 0:
+        crossroad_type = "not_detected"
+        return None
+
+    left_i  = int(round(left_mean))
+    right_i = int(round(right_mean))
+
+    left_i  = max(1, min(left_i,  w_hist - 2))
+    right_i = max(left_i + 1, min(right_i, w_hist - 1))
+
+    # --- podział na 3 sekcje ---
+    left_section   = hisValues[:left_i]
+    center_section = hisValues[left_i:right_i]
+    right_section  = hisValues[right_i:]
+
+    left_width   = max(len(left_section),   1)
+    center_width = max(len(center_section), 1)
+    right_width  = max(len(right_section),  1)
+
+    # helpers
+    def section_energy(section, width):
+        energy = float(np.sum(section))
+        max_energy = float(h_roi * width * 255)
+        norm = energy / max_energy if max_energy > 0 else 0.0
+        return energy, norm
+
+    def section_spread(section):
+        """0..1 – jak szeroka jest część 'wysoka' w danej sekcji."""
+        if section.size == 0:
+            return 0.0
+        peak = float(section.max())
+        if peak <= 0:
+            return 0.0
+        thr = 0.3 * peak
+        width_high = float(np.sum(section >= thr))
+        return width_high / float(len(section))
+
+    # --- energie (wypełnienie) ---
+    _, norm_left   = section_energy(left_section,   left_width)
+    _, norm_center = section_energy(center_section, center_width)
+    _, norm_right  = section_energy(right_section,  right_width)
+
+    # --- spread (kształt) ---
+    spread_left   = section_spread(left_section)
+    spread_center = section_spread(center_section)
+    spread_right  = section_spread(right_section)
+
+    # --- piki i podobieństwo ---
+    left_peak  = float(hisValues[left_i])
+    right_peak = float(hisValues[right_i])
+    peak_diff  = abs(left_peak - right_peak)
+    max_peak   = max(left_peak, right_peak, 1.0)
+    peaks_similar = (peak_diff <= k_peak_sim * max_peak)
+
+    # --- proste flagi ---
+    left_section_filled   = norm_left   > k_side_energy
+    right_section_filled  = norm_right  > k_side_energy
+    center_section_filled = norm_center > k_center_energy
+
+    # Czy zachowują się jak wąski pas czy jak szeroka odnoga?
+    left_is_branch  = spread_left  > spread_branch
+    right_is_branch = spread_right > spread_branch
+
+    left_is_lane  = spread_left  < spread_lane
+    right_is_lane = spread_right < spread_lane
+
+    if DEBUG:
+        print("Crossroad Detection Debug Info:")
+        print(f"  Energies (norm): L={norm_left:.3f}, C={norm_center:.3f}, R={norm_right:.3f}")
+        print(f"  Spreads:         L={spread_left:.3f}, C={spread_center:.3f}, R={spread_right:.3f}")
+        print(f"  Peaks:           L={left_peak:.1f}, R={right_peak:.1f}, diff={peak_diff:.1f}, similar={peaks_similar}")
+        print(f"  Filled flags:    L={left_section_filled}, C={center_section_filled}, R={right_section_filled}")
+        print(f"  Lane-like:       L={left_is_lane}, R={right_is_lane}")
+        print(f"  Branch-like:     L={left_is_branch}, R={right_is_branch}")
+
+    # ----------------- KLASYFIKACJA WG TWOICH ZASAD -----------------
+
+    # 1) X_crossroad:
+    #    - środek NIE wypełniony
+    #    - piki podobne
+    #    - brak odnóg (boki wyglądają jak zwykłe, wąskie pasy)
+    if (not center_section_filled and
+        peaks_similar and
+        left_is_branch and right_is_branch):
+        crossroad_type = "X_crossroad"
+        return None
+
+    # 2) T_crossroad:
+    #    - środek WYPEŁNIONY
+    #    - podobne piki
+    #    - płaskie / szerokie odnogi po lewej i prawej
+    if (center_section_filled and
+        peaks_similar and
+        left_is_branch and right_is_branch):
+        crossroad_type = "T_crossroad"
+        return None
+
+    # 3) L_turn-straight:
+    #    - środek pusty
+    #    - piki NIE są podobne
+    #    - płaska odnoga tylko po LEWEJ
+    if (not center_section_filled and
+        left_section_filled and left_is_branch and
+        right_section_filled and not right_is_branch):
+        crossroad_type = "L_turn-straight"
+        return None
+
+    # 4) R_turn-straight:
+    #    - środek pusty
+    #    - piki NIE są podobne
+    #    - płaska odnoga tylko po PRAWEJ
+    if (not center_section_filled and
+        right_section_filled and right_is_branch and
+        left_section_filled and not left_is_branch):
+        crossroad_type = "R_turn-straight"
+        return None
+
+    # nic z powyższych
+    crossroad_type = "not_detected"
+    return None
+
+
+
 
 def energy_in_roi(left_half, right_half, h_roi, midpoint, w_roi):
     global left_lane_ok, right_lane_ok, lanes_detected, threshold_lane_detect, confidence_left, confidence_right
@@ -182,7 +388,8 @@ def getHistogram(img, minPer=0.1, display=None, region=1):
         left_mean = np.argmax(left_half)
         right_mean = np.argmax(right_half) + midpoint
         
-
+    if region != 4:
+        crossroad_in_roi(hisValues, left_mean, right_mean, h_roi, w_roi)
     # Lane center: average between left and right lane positions
     basePoint = int((int(round(left_mean)) + int(round(right_mean))) // 2)
 
@@ -455,7 +662,7 @@ def getLaneCurve(img):
         # Draw center markers on IPM view
         cv2.circle(imgWarpPoints, (middlePoint_full_roi, h), 7, (255, 0, 255), cv2.FILLED)
         cv2.circle(imgWarpPoints, (curveAveragePoint_full_roi, (h // 2) - 20), 7, (255, 255, 255), cv2.FILLED)
-
+        cv2.putText(imgWarpPoints, "crossroad %r" % crossroad_type, (150, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1) # Blue color text
         # Top / middle / bottom ROI centers
         cv2.circle(imgWarpPoints, (int(curveAveragePoint_top_roi), int(y_top)), 6, (0, 0, 255), cv2.FILLED)
         cv2.circle(imgWarpPoints, (int(curveAveragePoint_middle_roi), int(y_middle)), 6, (0, 255, 0), cv2.FILLED)
