@@ -1,694 +1,798 @@
-# ====================== Main lane center detection code ======================
+# ====================== Lane detection & crossroad detection module ======================
 import cv2
 import numpy as np
 import time
 
-# ====================== GLOBAL CONFIG ======================
-DEBUG = True
-DISPLAY = True
-# ====================== MOST VALUABLE DATA ======================
-# "curve": curve,
-# "offset": norm_middlePoint_full_roi,
-# "poly": (a, b, c),
-# "lane_ok": lane_ok,
-# "left_lane_ok": left_lane_ok,
-# "right_lane_ok": right_lane_ok,
 
-#======================= PARAMS ======================
-# HSV threshold parameters for lane marking detection
-h_min = 0
-s_min = 0
-v_min = 150
-h_max = 179
-s_max = 255
-v_max = 255
-# progi do wykrywania skrzyżowań (będą sterowane z trackbarów)
-k_center_energy = 0.06   # ile energii w środku = "wypełniony środek"
-k_side_energy   = 0.04   # minimalna energia boku aby uznać że pas istnieje
-k_peak_sim      = 0.5    # podobieństwo pików (0..1)
-spread_branch   = 0.30   # spread > 0.25 => szeroka odnoga
-spread_lane     = 0.30   # spread < 0.10 => typowy wąski pas
-
-left_lane_ok = False
-right_lane_ok = False
-lanes_detected = False
-crossroad_type = "not_detected"  # "not_detected", "T_crossroad", "X_crossroad" ,"L_turn-straight", "R_turn-straight"
-threshold_lane_detect = 0.05
-confidence_left = 0.0
-confidence_right = 0.0
-curveList = []
-CURVELIST_LENGTH = 10
-
-def initializeCrossroadTrackbars():
+class LaneDetector:
     """
-    Window + trackbars for tuning crossroad detection thresholds:
-      - k_center_energy
-      - k_side_energy
-      - k_peak_sim
+    LaneDetector
+
+    Responsibilities:
+      - Apply HSV thresholding to extract lane markings.
+      - Warp perspective to bird's-eye (IPM) view using a trapezoid.
+      - Split the IPM into horizontal ROIs and compute histograms.
+      - Estimate lane center, curvature and polynomial fit.
+      - Estimate lane presence (left/right) and confidence from energy.
+      - Detect simple crossroad types based on bottom ROI histogram:
+          * "X_crossroad"
+          * "T_crossroad"
+          * "L_turn-straight"
+          * "R_turn-straight"
+          * "not_detected"
+      - Optionally show debug windows and interactive trackbars.
     """
-    cv2.namedWindow("Crossroad_Debug")
-    cv2.resizeWindow("Crossroad_Debug", 500, 300)
 
-    # trackbary 0..100 -> 0.00 .. 1.00
-    cv2.createTrackbar("k_center x100", "Crossroad_Debug", int(k_center_energy * 100), 100, nothing)
-    cv2.createTrackbar("k_side   x100", "Crossroad_Debug", int(k_side_energy * 100),   100, nothing)
-    cv2.createTrackbar("k_peak   x100", "Crossroad_Debug", int(k_peak_sim * 100),      100, nothing)
-    cv2.createTrackbar("spread branch x100", "Crossroad_Debug", int(spread_branch * 100), 100, nothing)
-    cv2.createTrackbar("spread lane   x100", "Crossroad_Debug", int(spread_lane * 100),   100, nothing)
+    # ------------- basic callback for trackbars -------------
+    @staticmethod
+    def _nothing(a):
+        """Dummy callback for OpenCV trackbars."""
+        pass
 
+    # ------------- constructor -------------
+    def __init__(
+        self,
+        frame_width: int = 480,
+        frame_height: int = 240,
+        debug: bool = True,
+        display: bool = True,
+        # initial IPM trapezoid (WidthTop, WidthBottom, HeightTop, HeightBottom)
+        ipm_trapezoid_init=(140, 240, 116, 240),
+    ):
+        # Config
+        self.debug = debug
+        self.display = display
 
-def time_to_exec(func):
-    """Decorator to measure execution time of functions."""
-    def wrapper(*args, **kwargs):
-        start_time = time.time()
-        result = func(*args, **kwargs)
-        end_time = time.time()
-        exec_time = end_time - start_time
-        print(f"Execution time of {func.__name__}: {exec_time:.6f} seconds")
-        return result
-    return wrapper
+        # Image size that the detector expects (user should resize frames to this)
+        self.frame_width = frame_width
+        self.frame_height = frame_height
 
-def nothing(a):
-    """Dummy callback for OpenCV trackbars (does nothing)."""
-    pass
+        # HSV threshold parameters for lane marking detection
+        self.h_min = 0
+        self.s_min = 0
+        self.v_min = 200
+        self.h_max = 179
+        self.s_max = 255
+        self.v_max = 255
 
+        # Crossroad detection thresholds (will be updated by crossroad trackbars)
+        self.k_center_energy = 0.06   # how much center energy means "center is filled"
+        self.k_side_energy = 0.04     # minimal side energy to treat a lane as present
+        self.k_peak_sim = 0.5         # similarity of peaks (0..1)
+        self.spread_branch = 0.30     # spread > this => wide branch
+        self.spread_lane = 0.30       # spread < this => narrow lane
 
-def roi_segment(img, vertices=3):
-    """
-    Split the warped image into `vertices` horizontal stripes (top -> bottom).
+        # Lane presence / confidence
+        self.left_lane_ok = False
+        self.right_lane_ok = False
+        self.lanes_detected = False
+        self.threshold_lane_detect = 0.05
+        self.confidence_left = 0.0
+        self.confidence_right = 0.0
 
-    Returns:
-        rois      : list of sub-images [roi_0, roi_1, roi_2, ...]
-        centers_y : list of vertical centers [y_center_0, y_center_1, ...]
-    """
-    h, w = img.shape[:2]
-    if vertices <= 0:
-        return [], []
+        # Crossroad state
+        self.crossroad_type = "not_detected"  # "not_detected", "T_crossroad", "X_crossroad", "L_turn-straight", "R_turn-straight"
 
-    segment_h = h // vertices
-    rois = []
-    centers_y = []
+        # Curve smoothing
+        self.curve_list = []
+        self.curve_list_length = 10
 
-    for i in range(vertices):
-        y_start = i * segment_h
-        # Last segment takes the remaining pixels to cover full height
-        y_end = h if i == vertices - 1 else (i + 1) * segment_h
-        roi = img[y_start:y_end, :]
-        y_center = (y_start + y_end) // 2
-
-        rois.append(roi)
-        centers_y.append(y_center)
-
-    return rois, centers_y
-
-
-def crossroad_in_roi(hisValues, left_mean, right_mean, h_roi, w_roi):
-    """
-    Analiza histogramu w dolnym ROI i próba wykrycia typu skrzyżowania.
-
-    Ustawia globalny crossroad_type na jeden z:
-        - "X_crossroad"
-        - "T_crossroad"
-        - "L_turn-straight"
-        - "R_turn-straight"
-        - "not_detected"
-
-    Dodatkowo rysuje okno "Crossroad_Debug" z bieżącymi parametrami.
-    """
-    global crossroad_type, k_center_energy, k_side_energy, k_peak_sim, spread_branch, spread_lane
-
-    # --- odczyt progów z trackbarów (0..100 -> 0.00..1.00) ---
-    k_center_energy = cv2.getTrackbarPos("k_center x100", "Crossroad_Debug") / 100.0
-    k_side_energy   = cv2.getTrackbarPos("k_side   x100", "Crossroad_Debug") / 100.0
-    k_peak_sim      = cv2.getTrackbarPos("k_peak   x100", "Crossroad_Debug") / 100.0
-    spread_branch   = cv2.getTrackbarPos("spread branch x100", "Crossroad_Debug") / 100.0
-    spread_lane     = cv2.getTrackbarPos("spread lane   x100", "Crossroad_Debug") / 100.0
-
-    # --- bezpieczeństwo indeksów ---
-    w_hist = len(hisValues)
-    if w_hist == 0:
-        crossroad_type = "not_detected"
-        return None
-
-    left_i  = int(round(left_mean))
-    right_i = int(round(right_mean))
-
-    left_i  = max(1, min(left_i,  w_hist - 2))
-    right_i = max(left_i + 1, min(right_i, w_hist - 1))
-
-    # --- podział na 3 sekcje ---
-    left_section   = hisValues[:left_i]
-    center_section = hisValues[left_i:right_i]
-    right_section  = hisValues[right_i:]
-
-    left_width   = max(len(left_section),   1)
-    center_width = max(len(center_section), 1)
-    right_width  = max(len(right_section),  1)
-
-    def section_energy(section, width):
-        energy = float(np.sum(section))
-        max_energy = float(h_roi * width * 255)
-        norm = energy / max_energy if max_energy > 0 else 0.0
-        return energy, norm
-
-    def section_spread(section):
-        """0..1 – jak szeroka jest część 'wysoka' w danej sekcji."""
-        if section.size == 0:
-            return 0.0
-        peak = float(section.max())
-        if peak <= 0:
-            return 0.0
-        thr = 0.3 * peak
-        width_high = float(np.sum(section >= thr))
-        return width_high / float(len(section))
-
-    # --- energie (wypełnienie) ---
-    _, norm_left   = section_energy(left_section,   left_width)
-    _, norm_center = section_energy(center_section, center_width)
-    _, norm_right  = section_energy(right_section,  right_width)
-
-    # --- spread (kształt) ---
-    spread_left   = section_spread(left_section)
-    spread_center = section_spread(center_section)
-    spread_right  = section_spread(right_section)
-
-    # --- piki i podobieństwo ---
-    left_peak  = float(hisValues[left_i])
-    right_peak = float(hisValues[right_i])
-    peak_diff  = abs(left_peak - right_peak)
-    max_peak   = max(left_peak, right_peak, 1.0)
-    peaks_similar = (peak_diff <= k_peak_sim * max_peak)
-
-    # --- proste flagi ---
-    left_section_filled   = norm_left   > k_side_energy
-    right_section_filled  = norm_right  > k_side_energy
-    center_section_filled = norm_center > k_center_energy
-
-    # Czy zachowują się jak wąski pas czy jak szeroka odnoga?
-    left_is_branch  = spread_left  > spread_branch
-    right_is_branch = spread_right > spread_branch
-
-    left_is_lane  = spread_left  < spread_lane
-    right_is_lane = spread_right < spread_lane
-
-    # ----------------- KLASYFIKACJA WG TWOICH ZASAD -----------------
-
-    # 1) X_crossroad: środek pusty, piki podobne, oba boki jak pasy
-    if (not center_section_filled and
-        peaks_similar and
-        left_is_lane and right_is_lane):
-        crossroad_type = "X_crossroad"
-    # 2) T_crossroad: środek wypełniony, piki podobne, szerokie odnogi po obu stronach
-    elif (center_section_filled and
-          peaks_similar and
-          left_is_branch and right_is_branch):
-        crossroad_type = "T_crossroad"
-    # 3) L_turn-straight: środek pusty, piki różne, szeroka odnoga tylko po lewej
-    elif (not center_section_filled and
-          not peaks_similar and
-          left_section_filled and left_is_branch and
-          right_section_filled and right_is_lane):
-        crossroad_type = "L_turn-straight"
-    # 4) R_turn-straight: środek pusty, piki różne, szeroka odnoga tylko po prawej
-    elif (not center_section_filled and
-          not peaks_similar and
-          right_section_filled and right_is_branch and
-          left_section_filled and left_is_lane):
-        crossroad_type = "R_turn-straight"
-    else:
-        crossroad_type = "not_detected"
-
-    # ----------------- OKNO DEBUG -----------------
-    debug_img = np.zeros((260, 500, 3), np.uint8)
-
-    y = 20
-    dy = 20
-
-    cv2.putText(debug_img, f"k_center={k_center_energy:.2f}  k_side={k_side_energy:.2f}  k_peak={k_peak_sim:.2f}",
-                (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 255), 1)
-    y += dy
-
-    cv2.putText(debug_img, f"Energies: L={norm_left:.3f}  C={norm_center:.3f}  R={norm_right:.3f}",
-                (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-    y += dy
-
-    cv2.putText(debug_img, f"Spreads : L={spread_left:.3f}  C={spread_center:.3f}  R={spread_right:.3f}",
-                (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-    y += dy
-
-    cv2.putText(debug_img, f"Peaks   : L={left_peak:.0f}  R={right_peak:.0f}  diff={peak_diff:.0f}  similar={peaks_similar}",
-                (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 1)
-    y += dy
-
-    cv2.putText(debug_img, f"Filled  : L={left_section_filled}  C={center_section_filled}  R={right_section_filled}",
-                (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 255, 200), 1)
-    y += dy
-
-    cv2.putText(debug_img, f"Lane    : L={left_is_lane}  R={right_is_lane}",
-                (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 255), 1)
-    y += dy
-
-    cv2.putText(debug_img, f"Branch  : L={left_is_branch}  R={right_is_branch}",
-                (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 150, 150), 1)
-    y += dy
-
-    cv2.putText(debug_img, f"TYPE: {crossroad_type}",
-                (10, y+10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-
-    cv2.imshow("Crossroad_Debug", debug_img)
-
-    return None
+        # IPM trapezoid initial values
+        self.ipm_trapezoid_init = ipm_trapezoid_init
+        self.ipm_width_top, self.ipm_width_bottom, self.ipm_height_top, self.ipm_height_bottom = ipm_trapezoid_init
 
 
+        # Initialize OpenCV trackbars (debug only)
+        if self.debug:
+            self._initialize_perspective_trackbars(
+                self.ipm_trapezoid_init,
+                self.frame_width,
+                self.frame_height,
+            )
+            self._initialize_crossroad_trackbars()
+
+    # ====================== TRACKBARS (PERSPECTIVE) ======================
+    def _initialize_perspective_trackbars(self, initial_vals, wT=480, hT=240):
+        """
+        Initialize OpenCV window and trackbars for the IPM trapezoid.
+
+        initial_vals: [widthTop, widthBottom, heightTop, heightBottom]
+        wT, hT: expected frame width/height used for trackbar ranges.
+        """
+        cv2.namedWindow("Points_Setup")
+        cv2.resizeWindow("Points_Setup", 600, 300)
+        cv2.createTrackbar("Width Top", "Points_Setup", initial_vals[0], wT // 2, self._nothing)
+        cv2.createTrackbar("Width Bottom", "Points_Setup", initial_vals[1], wT // 2, self._nothing)
+        cv2.createTrackbar("Height Top", "Points_Setup", initial_vals[2], hT, self._nothing)
+        cv2.createTrackbar("Height Bottom", "Points_Setup", initial_vals[3], hT, self._nothing)
+
+    def _get_perspective_points_from_trackbars(self, wT=480, hT=240):
+        """
+        Get IPM trapezoid points.
+
+        If debug is True -> read from OpenCV trackbars.
+        If debug is False -> use fixed values from ipm_trapezoid_init.
+        """
+        if self.debug:
+            # Read trapezoid coordinates from trackbars
+            width_top = cv2.getTrackbarPos("Width Top", "Points_Setup")
+            width_bottom = cv2.getTrackbarPos("Width Bottom", "Points_Setup")
+            height_top = cv2.getTrackbarPos("Height Top", "Points_Setup")
+            height_bottom = cv2.getTrackbarPos("Height Bottom", "Points_Setup")
+        else:
+            # Use fixed, initialized values (no GUI needed)
+            width_top = self.ipm_width_top
+            width_bottom = self.ipm_width_bottom
+            height_top = self.ipm_height_top
+            height_bottom = self.ipm_height_bottom
+
+        # Symmetric trapezoid around the image center
+        points = np.float32([
+            [wT // 2 - width_top,     height_top],     # Top-Left
+            [wT // 2 + width_top,     height_top],     # Top-Right
+            [wT // 2 - width_bottom,  height_bottom],  # Bottom-Left
+            [wT // 2 + width_bottom,  height_bottom],  # Bottom-Right
+        ])
+        return points
 
 
+    # ====================== TRACKBARS (CROSSROAD) ======================
+    def _initialize_crossroad_trackbars(self):
+        """
+        Create window + trackbars for tuning crossroad detection thresholds:
 
-def energy_in_roi(left_half, right_half, h_roi, midpoint, w_roi):
-    global left_lane_ok, right_lane_ok, lanes_detected, threshold_lane_detect, confidence_left, confidence_right
-    """ Calculate normalized energy in left and right halves of the ROI.
-    Args:
-        left_half (np.ndarray): Pixel values of the left half.
-        right_half (np.ndarray): Pixel values of the right half.
-        h_roi (int): Height of the ROI.
-        midpoint (int): Midpoint column index.
-        w_roi (int): Width of the ROI.
+          - k_center_energy
+          - k_side_energy
+          - k_peak_sim
+          - spread_branch
+          - spread_lane
+        """
+        cv2.namedWindow("Crossroad_Debug")
+        cv2.resizeWindow("Crossroad_Debug", 500, 300)
 
-    Returns:
-        tuple: (normalized_left_energy, normalized_right_energy)
-    """
-    left_energy_sum  = np.sum(left_half)
-    right_energy_sum = np.sum(right_half)
+        # Trackbars 0..100 -> 0.00..1.00
+        cv2.createTrackbar("k_center x100", "Crossroad_Debug", int(self.k_center_energy * 100), 100, self._nothing)
+        cv2.createTrackbar("k_side   x100", "Crossroad_Debug", int(self.k_side_energy * 100),   100, self._nothing)
+        cv2.createTrackbar("k_peak   x100", "Crossroad_Debug", int(self.k_peak_sim * 100),      100, self._nothing)
+        cv2.createTrackbar("spread branch x100", "Crossroad_Debug", int(self.spread_branch * 100), 100, self._nothing)
+        cv2.createTrackbar("spread lane   x100", "Crossroad_Debug", int(self.spread_lane * 100),   100, self._nothing)
 
-    # Max theoretical energy per half (all pixels = 255)
-    max_left_energy  = h_roi * midpoint * 255
-    max_right_energy = h_roi * (w_roi - midpoint) * 255
+    def _update_crossroad_params_from_trackbars(self):
+        """Update crossroad detection thresholds from trackbars."""
+        self.k_center_energy = cv2.getTrackbarPos("k_center x100", "Crossroad_Debug") / 100.0
+        self.k_side_energy = cv2.getTrackbarPos("k_side   x100", "Crossroad_Debug") / 100.0
+        self.k_peak_sim = cv2.getTrackbarPos("k_peak   x100", "Crossroad_Debug") / 100.0
+        self.spread_branch = cv2.getTrackbarPos("spread branch x100", "Crossroad_Debug") / 100.0
+        self.spread_lane = cv2.getTrackbarPos("spread lane   x100", "Crossroad_Debug") / 100.0
 
-    normalized_left_energy  = left_energy_sum  / max_left_energy  if max_left_energy  > 0 else 0.0
-    normalized_right_energy = right_energy_sum / max_right_energy if max_right_energy > 0 else 0.0
+    # ====================== BASIC HELPERS ======================
+    def _roi_segment(self, img, vertices=3):
+        """
+        Split the image into `vertices` horizontal stripes from top to bottom.
 
-    confidence_left = min(normalized_left_energy / threshold_lane_detect, 1.0)
-    confidence_right = min(normalized_right_energy / threshold_lane_detect, 1.0)
+        Returns:
+            rois: list of sub-images [roi_0, roi_1, ...]
+            centers_y: list of vertical centers [y_center_0, y_center_1, ...]
+        """
+        h, w = img.shape[:2]
+        if vertices <= 0:
+            return [], []
 
+        segment_h = h // vertices
+        rois = []
+        centers_y = []
 
-    left_lane_ok  = normalized_left_energy  > threshold_lane_detect
-    right_lane_ok = normalized_right_energy > threshold_lane_detect
-    lanes_detected = left_lane_ok and right_lane_ok
+        for i in range(vertices):
+            y_start = i * segment_h
+            y_end = h if i == vertices - 1 else (i + 1) * segment_h
+            roi = img[y_start:y_end, :]
+            y_center = (y_start + y_end) // 2
 
-    return normalized_left_energy, normalized_right_energy
+            rois.append(roi)
+            centers_y.append(y_center)
 
+        return rois, centers_y
 
-def getHistogram(img, minPer=0.1, display=None, region=1):
-    """
-    Compute lane center position using a column-wise histogram.
+    def _draw_perspective_points(self, img, points):
+        """
+        Draw IPM trapezoid points and outline on the image.
 
-    Args:
-        img (np.ndarray): Binary or grayscale warped image.
-        minPer (float): Threshold ratio of the maximum column value; columns
-                        below this threshold are treated as noise.
-        display (bool | None): If True, returns a debug histogram image.
-                               If None, uses global DISPLAY flag.
-        region (int):
-            - 1 : use full height (prediction, more stable).
-            - >1: use only the bottom 1/region part of the image
-                  (current position, more precise).
+        Args:
+            img: BGR image.
+            points: 4 points [TL, TR, BL, BR].
 
-    Returns:
-        basePoint (int): Estimated lane center x-coordinate (in pixels).
-        imgHist (np.ndarray | None): Debug image with plotted histogram,
-                                     or None if display is False.
-    """
-    if display is None:
-        display = DISPLAY
+        Returns:
+            Image with drawn trapezoid.
+        """
+        reorder = np.array([0, 1, 3, 2])  # TL, TR, BR, BL
+        pts = np.int32(points[reorder])
+        for x, y in pts:
+            cv2.circle(img, (int(x), int(y)), 15, (0, 0, 255), cv2.FILLED)
+        cv2.polylines(img, [pts], isClosed=True, color=(0, 255, 0), thickness=2)
+        return img
 
-    h, w = img.shape[:2]
-    
-    # Region Of Interest based on region parameter
-    if region == 1:
-        roi = img
-    else:
-        start_row = h - h // region
-        roi = img[start_row:, :]
-    h_roi, w_roi = roi.shape[:2]
-    # Column-wise histogram (sum of pixel values in each column)
-    hisValues = np.sum(roi, axis=0)
-    midpoint = w_roi // 2
-    left_half = hisValues[:midpoint]
-    right_half = hisValues[midpoint:]
+    def _warp_image(self, img, points, w, h):
+        """
+        Apply perspective (bird's-eye) warp to the image based on 4 points.
 
-    if region == 4:
-        # For region=4, set global line detect flags based on energy
-        energy_left, energy_right = energy_in_roi(left_half, right_half, h_roi, midpoint, w_roi)
-    else:
-        energy_left, energy_right = 0.0, 0.0
-    # Fallback to image center if one side has no lane pixels
-    if left_half.max() == 0 or right_half.max() == 0:
-        basePoint = midpoint
-        imgHist = np.zeros((h, w, 3), np.uint8) if display else None
-        return basePoint, imgHist, energy_left, energy_right
+        Args:
+            img: Source image.
+            points: 4 points (np.float32) for perspective transform.
+            w, h: target width/height.
 
-    
+        Returns:
+            Warped (IPM) image.
+        """
+        pts1 = np.float32(points)
+        pts2 = np.float32([[0, 0], [w, 0], [0, h], [w, h]])
+        matrix = cv2.getPerspectiveTransform(pts1, pts2)
+        img_warp = cv2.warpPerspective(img, matrix, (w, h))
+        return img_warp
 
-    # Prediction mode (region == 1): weighted centroid on both halves
-    if region == 1:
-        thr_left = minPer * (left_half.max() if left_half.max() > 0 else 1)
-        idxs_l = np.where(left_half >= thr_left)[0]
-        if idxs_l.size == 0:
+    def _threshold(self, img):
+        """
+        Apply HSV-based thresholding and morphology to extract lane markings.
+
+        Args:
+            img: Input BGR frame or road image.
+
+        Returns:
+            Binary mask of lane candidates (optionally thinned).
+        """
+        img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        lower_white = np.array([self.h_min, self.s_min, self.v_min])
+        upper_white = np.array([self.h_max, self.s_max, self.v_max])
+        mask_white = cv2.inRange(img_hsv, lower_white, upper_white)
+        mask_white = cv2.morphologyEx(mask_white, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+        mask_white = cv2.GaussianBlur(mask_white, (5, 5), 0)
+
+        # Optional thinning if available
+        if hasattr(cv2, "ximgproc") and hasattr(cv2.ximgproc, "thinning"):
+            mask_white = cv2.ximgproc.thinning(mask_white)
+
+        return mask_white
+
+    @staticmethod
+    def _normalize_point(point, y, w, h):
+        """
+        Normalize image coordinates to a compact range.
+
+        Args:
+            point: x coordinate in pixels.
+            y: y coordinate in pixels.
+            w: image width.
+            h: image height.
+
+        Returns:
+            norm_point: x in [-1, 1] (-1 = far left, 0 = center, +1 = far right).
+            norm_y: y in [0, 1] (0 = top of IPM, 1 = bottom of IPM).
+        """
+        norm_point = (point - (w / 2)) / (w / 2)
+        norm_y = y / h
+        return norm_point, norm_y
+
+    @staticmethod
+    def _fit_polynomial(road_points):
+        """
+        Fit a 2nd-degree polynomial x(y) to lane center points in normalized space.
+
+        Args:
+            road_points: list of (y_norm, x_norm) points, where
+                         y_norm in [0,1], x_norm in [-1,1].
+
+        Returns:
+            x_fit: fitted x values (normalized) for sampled y.
+            y_fit: sampled y values in [0,1].
+            a, b, c: polynomial coefficients x = a*y^2 + b*y + c.
+        """
+        road_points_np = np.array(road_points, dtype=np.float32)
+        xs = road_points_np[:, 1]
+        ys = road_points_np[:, 0]
+
+        coeffs = np.polyfit(ys, xs, 2)
+        a, b, c = coeffs
+
+        print(f"Polynomial coefficients: a={a:.4f}, b={b:.4f}, c={c:.4f}")
+
+        y_fit = np.linspace(0, 1, num=100)
+        x_fit = np.polyval(coeffs, y_fit)
+        return x_fit, y_fit, a, b, c
+
+    # ====================== ENERGY BASED LANE PRESENCE ======================
+    def _energy_in_roi(self, left_half, right_half, h_roi, midpoint, w_roi):
+        """
+        Compute normalized energy in left and right halves of the 1D histogram.
+
+        Args:
+            left_half, right_half: 1D hist values for left / right half.
+            h_roi: ROI height in pixels.
+            midpoint: midpoint index (number of columns in left_half).
+            w_roi: ROI width in pixels.
+
+        Updates:
+            self.left_lane_ok, self.right_lane_ok, self.lanes_detected
+            self.confidence_left, self.confidence_right
+
+        Returns:
+            normalized_left_energy, normalized_right_energy
+        """
+        left_energy_sum = np.sum(left_half)
+        right_energy_sum = np.sum(right_half)
+
+        max_left_energy = h_roi * midpoint * 255
+        max_right_energy = h_roi * (w_roi - midpoint) * 255
+
+        norm_left = left_energy_sum / max_left_energy if max_left_energy > 0 else 0.0
+        norm_right = right_energy_sum / max_right_energy if max_right_energy > 0 else 0.0
+
+        self.confidence_left = min(norm_left / self.threshold_lane_detect, 1.0)
+        self.confidence_right = min(norm_right / self.threshold_lane_detect, 1.0)
+
+        self.left_lane_ok = norm_left > self.threshold_lane_detect
+        self.right_lane_ok = norm_right > self.threshold_lane_detect
+        self.lanes_detected = self.left_lane_ok and self.right_lane_ok
+
+        return norm_left, norm_right
+
+    # ====================== CROSSROAD DETECTION ======================
+    def _crossroad_in_roi(self, his_values, left_mean, right_mean, h_roi, w_roi):
+        """
+        Analyze the bottom ROI 1D histogram and try to detect crossroad type.
+
+        Sets self.crossroad_type to one of:
+          - "X_crossroad"
+          - "T_crossroad"
+          - "L_turn-straight"
+          - "R_turn-straight"
+          - "not_detected"
+
+        Also fills a "Crossroad_Debug" window with numeric info (if debug enabled).
+        """
+        # Update thresholds from GUI trackbars
+        if self.debug:
+            self._update_crossroad_params_from_trackbars()
+
+        w_hist = len(his_values)
+        if w_hist == 0:
+            self.crossroad_type = "not_detected"
+            return
+
+        left_i = int(round(left_mean))
+        right_i = int(round(right_mean))
+
+        left_i = max(1, min(left_i, w_hist - 2))
+        right_i = max(left_i + 1, min(right_i, w_hist - 1))
+
+        # Split into three sections
+        left_section = his_values[:left_i]
+        center_section = his_values[left_i:right_i]
+        right_section = his_values[right_i:]
+
+        left_width = max(len(left_section), 1)
+        center_width = max(len(center_section), 1)
+        right_width = max(len(right_section), 1)
+
+        def section_energy(section, width):
+            energy = float(np.sum(section))
+            max_energy = float(h_roi * width * 255)
+            norm = energy / max_energy if max_energy > 0 else 0.0
+            return energy, norm
+
+        def section_spread(section):
+            """
+            Returns value in 0..1 – how wide is the "high" part of this section.
+            """
+            if section.size == 0:
+                return 0.0
+            peak_val = float(section.max())
+            if peak_val <= 0:
+                return 0.0
+            thr = 0.3 * peak_val
+            width_high = float(np.sum(section >= thr))
+            return width_high / float(len(section))
+
+        # Energies
+        _, norm_left = section_energy(left_section, left_width)
+        _, norm_center = section_energy(center_section, center_width)
+        _, norm_right = section_energy(right_section, right_width)
+
+        # Spread
+        spread_left = section_spread(left_section)
+        spread_center = section_spread(center_section)
+        spread_right = section_spread(right_section)
+
+        # Peaks & similarity
+        left_peak = float(his_values[left_i])
+        right_peak = float(his_values[right_i])
+        peak_diff = abs(left_peak - right_peak)
+        max_peak = max(left_peak, right_peak, 1.0)
+        peaks_similar = (peak_diff <= self.k_peak_sim * max_peak)
+
+        # Simple flags
+        left_section_filled = norm_left > self.k_side_energy
+        right_section_filled = norm_right > self.k_side_energy
+        center_section_filled = norm_center > self.k_center_energy
+
+        # Lane-like vs branch-like
+        left_is_branch = spread_left > self.spread_branch
+        right_is_branch = spread_right > self.spread_branch
+
+        left_is_lane = spread_left < self.spread_lane
+        right_is_lane = spread_right < self.spread_lane
+
+        # ---- Classification according to your rules ----
+
+        # 1) X-crossroad: center empty, peaks similar, both sides look like regular lanes
+        if (not center_section_filled and
+                peaks_similar and
+                left_is_lane and right_is_lane):
+            self.crossroad_type = "X_crossroad"
+
+        # 2) T-crossroad: center filled, peaks similar, wide branches on both sides
+        elif (center_section_filled and
+              peaks_similar and
+              left_is_branch and right_is_branch):
+            self.crossroad_type = "T_crossroad"
+
+        # 3) Left turn + straight: center empty, peaks different,
+        #    wide branch only on the left, right looks like a regular lane
+        elif (not center_section_filled and
+              not peaks_similar and
+              left_section_filled and left_is_branch and
+              right_section_filled and right_is_lane):
+            self.crossroad_type = "L_turn-straight"
+
+        # 4) Right turn + straight: center empty, peaks different,
+        #    wide branch only on the right, left looks like a regular lane
+        elif (not center_section_filled and
+              not peaks_similar and
+              right_section_filled and right_is_branch and
+              left_section_filled and left_is_lane):
+            self.crossroad_type = "R_turn-straight"
+
+        else:
+            self.crossroad_type = "not_detected"
+
+        # Debug window
+        if self.debug:
+            debug_img = np.zeros((260, 500, 3), np.uint8)
+            y = 20
+            dy = 20
+
+            cv2.putText(debug_img,
+                        f"k_center={self.k_center_energy:.2f}  "
+                        f"k_side={self.k_side_energy:.2f}  "
+                        f"k_peak={self.k_peak_sim:.2f}",
+                        (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 255), 1)
+            y += dy
+
+            cv2.putText(debug_img,
+                        f"Energies: L={norm_left:.3f}  C={norm_center:.3f}  R={norm_right:.3f}",
+                        (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+            y += dy
+
+            cv2.putText(debug_img,
+                        f"Spreads : L={spread_left:.3f}  C={spread_center:.3f}  R={spread_right:.3f}",
+                        (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            y += dy
+
+            cv2.putText(debug_img,
+                        f"Peaks   : L={left_peak:.0f}  R={right_peak:.0f}  "
+                        f"diff={peak_diff:.0f}  similar={peaks_similar}",
+                        (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 1)
+            y += dy
+
+            cv2.putText(debug_img,
+                        f"Filled  : L={left_section_filled}  "
+                        f"C={center_section_filled}  R={right_section_filled}",
+                        (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 255, 200), 1)
+            y += dy
+
+            cv2.putText(debug_img,
+                        f"Lane    : L={left_is_lane}  R={right_is_lane}",
+                        (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 255), 1)
+            y += dy
+
+            cv2.putText(debug_img,
+                        f"Branch  : L={left_is_branch}  R={right_is_branch}",
+                        (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 150, 150), 1)
+            y += dy
+
+            cv2.putText(debug_img,
+                        f"TYPE: {self.crossroad_type}",
+                        (10, y + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+
+            cv2.imshow("Crossroad_Debug", debug_img)
+
+    # ====================== HISTOGRAM & CENTER ======================
+    def _get_histogram(self, img, min_per=0.1, region=1, display=None):
+        """
+        Compute lane center position using a column-wise histogram.
+
+        Args:
+            img: Binary or grayscale warped image.
+            min_per: Threshold ratio of the maximum column value;
+                     columns below this threshold are treated as noise.
+            region:
+                1  -> use full height (prediction, more stable).
+                >1 -> use only bottom 1/region of image (current position).
+            display:
+                If True  -> build a debug histogram image.
+                If None  -> use self.display.
+
+        Returns:
+            base_point: estimated lane center x-coordinate (in pixels).
+            img_hist: debug image with plotted histogram or None.
+            energy_left, energy_right: normalized energies (only meaningful for region==4).
+        """
+        if display is None:
+            display = self.display
+
+        h, w = img.shape[:2]
+
+        # Region of interest
+        if region == 1:
+            roi = img
+        else:
+            start_row = h - h // region
+            roi = img[start_row:, :]
+
+        h_roi, w_roi = roi.shape[:2]
+        his_values = np.sum(roi, axis=0)  # sum over rows
+        midpoint = w_roi // 2
+        left_half = his_values[:midpoint]
+        right_half = his_values[midpoint:]
+
+        # Lane energy / presence (only for bottom region, e.g. region=4)
+        if region == 4:
+            energy_left, energy_right = self._energy_in_roi(
+                left_half, right_half, h_roi, midpoint, w_roi
+            )
+        else:
+            energy_left, energy_right = 0.0, 0.0
+
+        # Fallback to center if one side is empty
+        if left_half.max() == 0 or right_half.max() == 0:
+            base_point = midpoint
+            img_hist = np.zeros((h, w, 3), np.uint8) if display else None
+            return base_point, img_hist, energy_left, energy_right
+
+        # Compute left/right means
+        if region == 1:
+            # Weighted centroid for prediction
+            thr_left = min_per * (left_half.max() if left_half.max() > 0 else 1)
+            idxs_l = np.where(left_half >= thr_left)[0]
+            if idxs_l.size == 0:
+                left_mean = np.argmax(left_half)
+            else:
+                weights_l = left_half[idxs_l].astype(np.float64)
+                left_mean = np.average(idxs_l, weights=weights_l)
+
+            thr_right = min_per * (right_half.max() if right_half.max() > 0 else 1)
+            idxs_r = np.where(right_half >= thr_right)[0]
+            if idxs_r.size == 0:
+                right_mean = np.argmax(right_half) + midpoint
+            else:
+                weights_r = right_half[idxs_r].astype(np.float64)
+                right_mean = np.average(idxs_r, weights=weights_r) + midpoint
+        else:
+            # Strongest peaks only
             left_mean = np.argmax(left_half)
-        else:
-            weights_l = left_half[idxs_l].astype(np.float64)
-            left_mean = np.average(idxs_l, weights=weights_l)
-
-        thr_right = minPer * (right_half.max() if right_half.max() > 0 else 1)
-        idxs_r = np.where(right_half >= thr_right)[0]
-        if idxs_r.size == 0:
             right_mean = np.argmax(right_half) + midpoint
-        else:
-            weights_r = right_half[idxs_r].astype(np.float64)
-            right_mean = np.average(idxs_r, weights=weights_r) + midpoint
-    else:
-        # Current position mode (region != 1): use strongest peaks only
-        left_mean = np.argmax(left_half)
-        right_mean = np.argmax(right_half) + midpoint
-        
-    if region != 4:
-        crossroad_in_roi(hisValues, left_mean, right_mean, h_roi, w_roi)
-    # Lane center: average between left and right lane positions
-    basePoint = int((int(round(left_mean)) + int(round(right_mean))) // 2)
 
-    imgHist = None
-    if display:
-        imgHist = np.zeros((h, w, 3), np.uint8)
-        maxv = hisValues.max() if hisValues.max() > 0 else 1
-        for x, intensity in enumerate(hisValues):
-            h_line = int((intensity / maxv) * h)
-            cv2.line(imgHist, (x, h), (x, h - h_line), (255, 0, 255), 1)
+        # Crossroad detection on bottom region (we can choose any region != 4,
+        # but here we used region==1 in the calling pipeline)
+        if region != 4:
+            self._crossroad_in_roi(his_values, left_mean, right_mean, h_roi, w_roi)
 
-        # Visual markers: left peak (green), right peak (blue), center (yellow)
-        lx = int(round(left_mean))
-        rx = int(round(right_mean))
-        cv2.circle(imgHist, (lx, h), 6, (0, 255, 0), cv2.FILLED)
-        cv2.circle(imgHist, (rx, h), 6, (255, 0, 0), cv2.FILLED)
-        cv2.circle(imgHist, (basePoint, h), 8, (0, 255, 255), cv2.FILLED)
+        # Lane center
+        base_point = int((int(round(left_mean)) + int(round(right_mean))) // 2)
 
-    return basePoint, imgHist, energy_left, energy_right
+        img_hist = None
+        if display:
+            img_hist = np.zeros((h, w, 3), np.uint8)
+            maxv = his_values.max() if his_values.max() > 0 else 1
+            for x, intensity in enumerate(his_values):
+                h_line = int((intensity / maxv) * h)
+                cv2.line(img_hist, (x, h), (x, h - h_line), (255, 0, 255), 1)
 
+            lx = int(round(left_mean))
+            rx = int(round(right_mean))
+            cv2.circle(img_hist, (lx, h), 6, (0, 255, 0), cv2.FILLED)
+            cv2.circle(img_hist, (rx, h), 6, (255, 0, 0), cv2.FILLED)
+            cv2.circle(img_hist, (base_point, h), 8, (0, 255, 255), cv2.FILLED)
 
-# ====================== TRACKBARS ======================
-def initializeTrackbars(initialTracbarVals, wT=480, hT=240):
-    """
-    Initialize OpenCV window and trackbars for perspective transform trapezoid.
+        return base_point, img_hist, energy_left, energy_right
 
-    Args:
-        initialTracbarVals (list[int]): Initial values for
-            [widthTop, widthBottom, heightTop, heightBottom].
-        wT (int): Target width.
-        hT (int): Target height.
-    """
-    cv2.namedWindow("Points_Setup")
-    cv2.resizeWindow("Points_Setup", 600, 300)
-    cv2.createTrackbar("Width Top", "Points_Setup", initialTracbarVals[0], wT // 2, nothing)
-    cv2.createTrackbar("Width Bottom", "Points_Setup", initialTracbarVals[1], wT // 2, nothing)
-    cv2.createTrackbar("Height Top", "Points_Setup", initialTracbarVals[2], hT, nothing)
-    cv2.createTrackbar("Height Bottom", "Points_Setup", initialTracbarVals[3], hT, nothing)
+    # ====================== MAIN PIPELINE ======================
+    def process_frame(self, img_bgr):
+        """
+        Full lane detection pipeline on a single BGR frame.
 
+        Returns a dictionary with the most important values:
 
-def getTrackbarValues(wT=480, hT=240):
-    """
-    Read trapezoid coordinates from trackbars and return them as points.
+            {
+              "curve": float,
+              "offset": float,          # normalized bottom lane center [-1,1]
+              "poly": (a, b, c),        # polynomial coefficients
+              "lane_ok": bool,
+              "left_lane_ok": bool,
+              "right_lane_ok": bool,
+              "left_energy": float,
+              "right_energy": float,
+              "left_confidence": float,
+              "right_confidence": float,
+              "crossroad_type": str,
+            }
 
-    Args:
-        wT (int): Target width.
-        hT (int): Target height.
+        Also draws debug windows if self.display == True.
+        """
+        road_points = []
+        h, w, c = img_bgr.shape
 
-    Returns:
-        points (np.ndarray): 4 points [TL, TR, BL, BR] as float32, defining
-                             the IPM trapezoid in the original image.
-    """
-    widthTop = cv2.getTrackbarPos("Width Top", "Points_Setup")
-    widthBottom = cv2.getTrackbarPos("Width Bottom", "Points_Setup")
-    heightTop = cv2.getTrackbarPos("Height Top", "Points_Setup")
-    heightBottom = cv2.getTrackbarPos("Height Bottom", "Points_Setup")
+        # 1. Perspective trapezoid from trackbars
+        points = self._get_perspective_points_from_trackbars(w, h)
 
-    # Symmetric trapezoid around the image center
-    points = np.float32([
-        [wT // 2 - widthTop, heightTop],        # Top-Left
-        [wT // 2 + widthTop, heightTop],        # Top-Right
-        [wT // 2 - widthBottom, heightBottom],  # Bottom-Left
-        [wT // 2 + widthBottom, heightBottom]   # Bottom-Right
-    ])
-    return points
+        # 2. Threshold + warp (mask)
+        img_thresh = self._threshold(img_bgr)
+        img_warp = self._warp_image(img_thresh, points, w, h)
 
+        # 3. Warp original BGR for visualizations
+        img_warp_color = self._warp_image(img_bgr, points, w, h)
+        img_warp_points = img_warp_color.copy()
 
-def drawPoints(img, points):
-    """
-    Draw trapezoid points and its outline on the image.
+        # 4. Split IPM into 3 horizontal ROIs
+        rois, centers_y = self._roi_segment(img_warp, vertices=3)
+        if len(rois) != 3:
+            print("ROI segmentation failed.")
+            return None
 
-    Args:
-        img (np.ndarray): BGR image.
-        points (np.ndarray): 4 points [TL, TR, BL, BR].
+        roi_top, roi_middle, roi_bottom = rois
+        y_top, y_middle, y_bottom = centers_y
 
-    Returns:
-        img (np.ndarray): Image with drawn trapezoid.
-    """
-    reorder = np.array([0, 1, 3, 2])  # TL, TR, BR, BL (proper polygon order)
-    pts = np.int32(points[reorder])
-    for x, y in pts:
-        cv2.circle(img, (int(x), int(y)), 15, (0, 0, 255), cv2.FILLED)
-    cv2.polylines(img, [pts], isClosed=True, color=(0, 255, 0), thickness=2)
-    return img
+        # 5. Histograms:
+        #    region=4 -> bottom slice (current position)
+        #    region=1 -> full height (prediction)
+        middle_point_full_roi, img_mid_hist, energy_left, energy_right = self._get_histogram(
+            img_warp, min_per=0.5, region=4, display=self.display
+        )
+        curve_avg_point_full_roi, img_curve_hist, _, _ = self._get_histogram(
+            img_warp, min_per=0.5, region=1, display=self.display
+        )
 
+        # Per-ROI centers (no debug images)
+        curve_top_roi, _, _, _ = self._get_histogram(roi_top, min_per=0.5, region=1, display=False)
+        curve_middle_roi, _, _, _ = self._get_histogram(roi_middle, min_per=0.5, region=1, display=False)
+        curve_bottom_roi, _, _, _ = self._get_histogram(roi_bottom, min_per=0.5, region=1, display=False)
 
-# ====================== PERSPECTIVE TRANSFORM ======================
-def warpIMG(img, points, w, h):
-    """
-    Apply perspective (bird's-eye) warp to the image based on 4 points.
+        # 6. Normalize points
+        norm_middle_full, norm_y_middle_full = self._normalize_point(
+            middle_point_full_roi, h, w, h
+        )
+        norm_curve_full, norm_y_curve_full = self._normalize_point(
+            curve_avg_point_full_roi, h / 2, w, h
+        )
+        norm_curve_top, norm_y_top = self._normalize_point(curve_top_roi, y_top, w, h)
+        norm_curve_middle, norm_y_middle = self._normalize_point(curve_middle_roi, y_middle, w, h)
+        norm_curve_bottom, norm_y_bottom = self._normalize_point(curve_bottom_roi, y_bottom, w, h)
 
-    Args:
-        img (np.ndarray): Source image.
-        points (np.ndarray): 4 points for perspective transform.
-        w (int): Target width.
-        h (int): Target height.
+        # Collect road points (y_norm, x_norm)
+        road_points.append((norm_y_middle_full, norm_middle_full))
+        road_points.append((norm_y_bottom, norm_curve_bottom))
+        road_points.append((norm_y_middle, norm_curve_middle))
+        road_points.append((norm_y_top, norm_curve_top))
 
-    Returns:
-        imgWarp (np.ndarray): Warped (IPM) image.
-    """
-    pts1 = np.float32(points)
-    pts2 = np.float32([[0, 0], [w, 0], [0, h], [w, h]])
-    matrix = cv2.getPerspectiveTransform(pts1, pts2)
-    imgWarp = cv2.warpPerspective(img, matrix, (w, h))
-    return imgWarp
+        # 7. Compute curve (difference between bottom center and global prediction)
+        curve_raw = norm_middle_full - norm_curve_full
+        self.curve_list.append(curve_raw)
+        if len(self.curve_list) > self.curve_list_length:
+            self.curve_list.pop(0)
+        curve = float(sum(self.curve_list) / len(self.curve_list))
 
+        print("curve:", curve)
+        print("center (bottom):", norm_middle_full)
+        print("predicted center:", norm_curve_full)
 
-def thresholding(img):
-    """
-    Apply HSV-based thresholding and simple morphology to extract lane markings.
+        # 8. Fit polynomial
+        x_fit, y_fit, a, b, c = self._fit_polynomial(road_points)
 
-    Args:
-        img (np.ndarray): Input BGR frame or road image.
+        # 9. Visualizations
+        if self.display:
+            # Lane centers on warped view
+            cv2.circle(img_warp_points, (middle_point_full_roi, h), 7, (255, 0, 255), cv2.FILLED)
+            cv2.circle(img_warp_points, (curve_avg_point_full_roi, (h // 2) - 20), 7, (255, 255, 255), cv2.FILLED)
+            cv2.putText(
+                img_warp_points,
+                f"crossroad: {self.crossroad_type}",
+                (150, 20),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255, 165, 0),
+                1,
+            )
 
-    Returns:
-        maskWhite (np.ndarray): Binary mask of lane candidates.
-                                Optionally thinned if ximgproc.thinning is available.
-    """
-    imgHsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    lowerWhite = np.array([h_min, s_min, v_min])
-    upperWhite = np.array([h_max, s_max, v_max])
-    maskWhite = cv2.inRange(imgHsv, lowerWhite, upperWhite)
-    maskWhite = cv2.morphologyEx(maskWhite, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
-    maskWhite = cv2.GaussianBlur(maskWhite, (5, 5), 0)
+            # ROI centers
+            cv2.circle(img_warp_points, (int(curve_top_roi), int(y_top)), 6, (0, 0, 255), cv2.FILLED)
+            cv2.circle(img_warp_points, (int(curve_middle_roi), int(y_middle)), 6, (0, 255, 0), cv2.FILLED)
+            cv2.circle(img_warp_points, (int(curve_bottom_roi), int(y_bottom)), 6, (255, 0, 0), cv2.FILLED)
 
-    # Optional skeletonization/thinning if available in this OpenCV build
-    if hasattr(cv2, "ximgproc") and hasattr(cv2.ximgproc, "thinning"):
-        maskWhite = cv2.ximgproc.thinning(maskWhite)
+            # Polynomial centerline in pixel space
+            x_fit_px = (x_fit * (w / 2)) + (w / 2)
+            y_fit_px = y_fit * h
+            for x_px, y_px in zip(x_fit_px.astype(int), y_fit_px.astype(int)):
+                cv2.circle(img_warp_points, (x_px, int(y_px)), 2, (0, 255, 255), -1)
 
-    return maskWhite
+            # Lane status & energies on mask image
+            cv2.putText(img_warp, f"left lane {self.left_lane_ok}", (150, 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
+            cv2.putText(img_warp, f"right lane {self.right_lane_ok}", (150, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
+            cv2.putText(img_warp, f"lanes detected {self.lanes_detected}", (150, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
+            cv2.putText(img_warp, f"left energy {energy_left:.3f}", (150, 80),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
+            cv2.putText(img_warp, f"left conf {self.confidence_left * 100:.1f}%", (150, 100),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
+            cv2.putText(img_warp, f"right energy {energy_right:.3f}", (150, 120),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
+            cv2.putText(img_warp, f"right conf {self.confidence_right * 100:.1f}%", (150, 140),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
 
+            # Main camera view with trapezoid
+            img_main_view = self._draw_perspective_points(img_bgr.copy(), points)
+            cv2.circle(
+                img_main_view,
+                (middle_point_full_roi, img_bgr.shape[0] - 10),
+                10,
+                (0, 255, 255),
+                cv2.FILLED,
+            )
 
-def normalize_range_points(point, y, w, h):
-    """
-    Normalize image coordinates to a compact range.
+            cv2.imshow("Main View", img_main_view)
+            cv2.imshow("Warped", img_warp)
+            cv2.imshow("Warped Points", img_warp_points)
+            cv2.imshow("Mid Histogram", img_mid_hist)
+            cv2.imshow("Curve Histogram", img_curve_hist)
 
-    Args:
-        point (float): x coordinate in pixels.
-        y (float): y coordinate in pixels.
-        w (int): image width in pixels.
-        h (int): image height in pixels.
-
-    Returns:
-        norm_point (float): normalized x in range [-1, 1]
-                            (-1 = far left, 0 = center, +1 = far right).
-        norm_y (float): normalized y in range [0, 1]
-                        (0 = top of IPM, 1 = bottom of IPM).
-    """
-    norm_point = (point - (w / 2)) / (w / 2)
-    norm_y = y / h
-    return norm_point, norm_y
-
-
-def polynomial_curve_fit(road_points):
-    """
-    Fit a 2nd-degree polynomial x(y) to lane center points.
-
-    Args:
-        road_points (list[tuple]): list of (y_norm, x_norm) points, where:
-            y_norm in [0, 1], x_norm in [-1, 1].
-
-    Returns:
-        x_fit (np.ndarray): fitted x values (normalized) for sampled y.
-        y_fit (np.ndarray): sampled y values in [0, 1].
-        a (float): curvature term    (how strong the bend is).
-        b (float): slope term        (initial turning direction).
-        c (float): offset term       (horizontal shift of the lane).
-    """
-    # Convert list of points to numpy array: shape (N, 2) -> [y, x]
-    road_points_np = np.array(road_points, dtype=np.float32)
-
-    # Separate X and Y (x = f(y))
-    xs = road_points_np[:, 1]
-    ys = road_points_np[:, 0]
-
-    # Fit 2nd-degree polynomial x = a*y^2 + b*y + c
-    coeffs = np.polyfit(ys, xs, 2)
-
-    # a - curvature strength (how sharp the turn is)
-    # b - turning direction near the start
-    # c - horizontal offset from the image center
-    a, b, c = coeffs
-
-    # Debug print of polynomial parameters
-    print(f"Polynomial coefficients: a={a:.4f}, b={b:.4f}, c={c:.4f}")
-
-    # Sample the fitted polynomial in normalized y space [0, 1]
-    y_fit = np.linspace(0, 1, num=100)
-    x_fit = np.polyval(coeffs, y_fit)
-
-    return x_fit, y_fit, a, b, c
+        # 10. Return most important values
+        result = {
+            "curve": curve,
+            "offset": norm_middle_full,
+            "poly": (a, b, c),
+            "lane_ok": self.lanes_detected,
+            "left_lane_ok": self.left_lane_ok,
+            "right_lane_ok": self.right_lane_ok,
+            "left_energy": energy_left,
+            "right_energy": energy_right,
+            "left_confidence": self.confidence_left,
+            "right_confidence": self.confidence_right,
+            "crossroad_type": self.crossroad_type,
+        }
+        return result
 
 
-# ====================== MAIN LANE PIPELINE ======================
-def getLaneCurve(img):
-    """
-    High-level lane detection pipeline on a static road image.
+# ====================== SIMPLE TEST ENTRY POINT ======================
+if __name__ == "__main__":
+    img = cv2.imread("road_images/test5.jpg")
+    img = cv2.resize(img, (480, 240))
 
-    Steps:
-      1. Read IPM trapezoid from trackbars.
-      2. Threshold and warp the image to bird's-eye view.
-      3. Split the IPM into 3 horizontal regions (top/mid/bottom).
-      4. Use histograms to estimate lane centers in each region.
-      5. Normalize lane centers and build a set of (y,x) road points.
-      6. Fit a 2nd-degree polynomial x(y) through those points.
-      7. Compute a smoothed 'curve' value and visualize everything.
-    """
-    road_points = []
-    h, w, c = img.shape
+    detector = LaneDetector(
+        frame_width=480,
+        frame_height=240,
+        debug=True,
+        display=True,
+        ipm_trapezoid_init=(140, 240, 116, 240),
+    )
 
-    # 1. Trapezoid from trackbars (IPM source region)
-    points = getTrackbarValues(w, h)
+    while True:
+        print("\033c", end="")  # clear terminal
+        start = time.time()
+        result = detector.process_frame(img)
+        end = time.time()
+        print(f"Frame processing time: {end - start:.6f} s")
+        print("Result dict:", result)
 
-    # 2. Thresholding + warp (on mask)
-    imgThresh = thresholding(img)
-    imgWarp = warpIMG(imgThresh, points, w, h)
+        if cv2.waitKey(30) & 0xFF == ord("q"):
+            break
 
-    # 3. Warp original BGR for visualization in IPM coordinates
-    imgWarpColor = warpIMG(img, points, w, h)
-    imgWarpPoints = imgWarpColor.copy()
-
-    # 4. Split IPM into 3 horizontal regions of interest
-    rois, centers_y = roi_segment(imgWarp, vertices=3)
-    if len(rois) != 3:
-        print("ROI segmentation failed")
-        return
-
-    roi_top, roi_middle, roi_bottom = rois
-    y_top, y_middle, y_bottom = centers_y
-
-    # 5. Histograms:
-    #    - full warped: current bottom lane center (region=4) + global prediction (region=1)
-    middlePoint_full_roi, img_midHist, energy_left, energy_right = getHistogram(imgWarp, minPer=0.5, display=DISPLAY, region=4)
-    curveAveragePoint_full_roi, img_CurveHist, _ , _= getHistogram(imgWarp, minPer=0.5, display=DISPLAY, region=1)
-
-    #    - separate centers for top/middle/bottom ROIs (no debug images)
-    curveAveragePoint_top_roi, _, _, _ = getHistogram(roi_top, minPer=0.5, display=False, region=1)
-    curveAveragePoint_middle_roi, _, _, _ = getHistogram(roi_middle, minPer=0.5, display=False, region=1)
-    curveAveragePoint_bottom_roi, _, _, _ = getHistogram(roi_bottom, minPer=0.5, display=False, region=1)
-
-    # Normalized versions (x in [-1,1], y in [0,1])
-    norm_middlePoint_full_roi, norm_y_middlePoint_full_roi = normalize_range_points(middlePoint_full_roi, h, w, h)
-    norm_curveAveragePoint_full_roi, norm_y_curveAveragePoint_full_roi = normalize_range_points(curveAveragePoint_full_roi, h / 2, w, h)
-    norm_curveAveragePoint_top_roi, norm_y_curveAveragePoint_top_roi = normalize_range_points(curveAveragePoint_top_roi, y_top, w, h)
-    norm_curveAveragePoint_middle_roi, norm_y_curveAveragePoint_middle_roi = normalize_range_points(curveAveragePoint_middle_roi, y_middle, w, h)
-    norm_curveAveragePoint_bottom_roi, norm_y_curveAveragePoint_bottom_roi = normalize_range_points(curveAveragePoint_bottom_roi, y_bottom, w, h)
-
-    # Collect normalized road points as (y_norm, x_norm)
-    road_points.append((norm_y_middlePoint_full_roi, norm_middlePoint_full_roi))
-    road_points.append((norm_y_curveAveragePoint_bottom_roi, norm_curveAveragePoint_bottom_roi))
-    road_points.append((norm_y_curveAveragePoint_middle_roi, norm_curveAveragePoint_middle_roi))
-    road_points.append((norm_y_curveAveragePoint_top_roi, norm_curveAveragePoint_top_roi))
-
-    # 6. Compute curve: difference between current bottom center and global prediction
-    curveRaw = norm_middlePoint_full_roi - norm_curveAveragePoint_full_roi
-
-    curveList.append(curveRaw)
-    if len(curveList) > CURVELIST_LENGTH:
-        curveList.pop(0)
-    curve = float(sum(curveList) / len(curveList))
-
-    print("curve:", curve)
-    print("center (bottom):", norm_middlePoint_full_roi)
-    print("predicted center:", norm_curveAveragePoint_full_roi)
-
-    # 7. Fit polynomial through road points
-    x_fit, y_fit, a, b, c = polynomial_curve_fit(road_points)
-
-    if DISPLAY:
-        # Draw center markers on IPM view
-        cv2.circle(imgWarpPoints, (middlePoint_full_roi, h), 7, (255, 0, 255), cv2.FILLED)
-        cv2.circle(imgWarpPoints, (curveAveragePoint_full_roi, (h // 2) - 20), 7, (255, 255, 255), cv2.FILLED)
-        cv2.putText(imgWarpPoints, "crossroad %r" % crossroad_type, (150, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1) # Blue color text
-        # Top / middle / bottom ROI centers
-        cv2.circle(imgWarpPoints, (int(curveAveragePoint_top_roi), int(y_top)), 6, (0, 0, 255), cv2.FILLED)
-        cv2.circle(imgWarpPoints, (int(curveAveragePoint_middle_roi), int(y_middle)), 6, (0, 255, 0), cv2.FILLED)
-        cv2.circle(imgWarpPoints, (int(curveAveragePoint_bottom_roi), int(y_bottom)), 6, (255, 0, 0), cv2.FILLED)
-
-        # Draw fitted polynomial centerline (back to pixel space)
-        x_fit_px = (x_fit * (w / 2)) + (w / 2)
-        y_fit_px = y_fit * h
-        for x_px, y_px in zip(x_fit_px.astype(int), y_fit_px.astype(int)):
-            cv2.circle(imgWarpPoints, (x_px, int(y_px)), 2, (0, 255, 255), -1)
-        # Write lanes status on imgWarpPoints
-        cv2.putText(imgWarp, "left lane %r" % left_lane_ok, (150, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1) # Blue color text
-        cv2.putText(imgWarp, "right lane %r" % right_lane_ok, (150, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
-        cv2.putText(imgWarp, "Are lanes detected %r" % lanes_detected, (150, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
-        cv2.putText(imgWarp, "left energy %.3f" % energy_left, (150, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
-        cv2.putText(imgWarp, "left confidence %.1f%%" % (confidence_left*100), (150, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
-        cv2.putText(imgWarp, "right energy %.3f" % energy_right, (150, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
-        cv2.putText(imgWarp, "right confidence %.1f%%" % (confidence_right*100), (150, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
-        # Debug views
-        imgMainView = drawPoints(img.copy(), points)
-        cv2.circle(imgMainView, (middlePoint_full_roi, img.shape[0] - 10), 10, (0, 255, 255), cv2.FILLED)
-
-        cv2.imshow("Main View", imgMainView)
-        cv2.imshow("Warped", imgWarp)
-        cv2.imshow("Warped Points", imgWarpPoints)
-        cv2.imshow("Mid Histogram", img_midHist)
-        cv2.imshow("Curve Histogram", img_CurveHist)
-
-    return a, b, c
-
-
-# ====================== ENTRY POINT ======================
-img = cv2.imread('road_images/crossroad-right.png')
-img = cv2.resize(img, (480, 240))
-
-if DEBUG:
-    initialTrackbarValues = [140, 240, 116, 240]  # initial trapezoid parameters
-    initializeTrackbars(initialTrackbarValues, wT=480, hT=240)
-    initializeCrossroadTrackbars()
-while True:
-    # Clean terminal output
-    print("\033c", end="")
-    time_to_exec(getLaneCurve)(img)
-    if cv2.waitKey(30) & 0xFF == ord('q'):
-        break
-
-cv2.destroyAllWindows()
+    cv2.destroyAllWindows()
