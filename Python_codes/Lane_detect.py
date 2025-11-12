@@ -50,7 +50,7 @@ class LaneDetector:
         # HSV threshold parameters for lane marking detection
         self.h_min = 0
         self.s_min = 0
-        self.v_min = 150
+        self.v_min = 200
         self.h_max = 179
         self.s_max = 255
         self.v_max = 255
@@ -773,13 +773,13 @@ class LaneDetector:
 
 # ====================== SIMPLE TEST ENTRY POINT ======================
 if __name__ == "__main__":
-    img = cv2.imread("road_images/crossroad-right.png")
+    img = cv2.imread("road_images/test5.jpg")
     img = cv2.resize(img, (480, 240))
 
     detector = LaneDetector(
         frame_width=480,
         frame_height=240,
-        debug=False,
+        debug=True,
         display=True,
         ipm_trapezoid_init=(140, 240, 116, 240),
     )
