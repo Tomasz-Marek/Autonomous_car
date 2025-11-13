@@ -800,7 +800,6 @@ if __name__ == "__main__":
 
 # ====================== SIMPLE TEST ENTRY POINT ======================
 if __name__ == "__main__":
-    # Spróbuj otworzyć plik wideo o nazwie "test_vid" z typowymi rozszerzeniami
     base_name = "road_images/test_vid"
     tried = []
     cap = None
@@ -821,12 +820,11 @@ if __name__ == "__main__":
     detector = LaneDetector(
         frame_width=480,
         frame_height=240,
-        debug=True,    # trackbary do IPM i skrzyżowań
-        display=True,  # okna podglądu
+        debug=True,
+        display=True,  
         ipm_trapezoid_init=(140, 240, 116, 240),
     )
 
-    # Ustal opóźnienie na podstawie FPS z pliku (jeśli brak – 33 ms ~ 30 FPS)
     fps = cap.get(cv2.CAP_PROP_FPS)
     delay_ms = int(1000 / fps) if fps and fps > 0 else 33
 
@@ -834,15 +832,13 @@ if __name__ == "__main__":
     while True:
         ret, frame = cap.read()
 
-        # Jeśli koniec pliku – cofnij na początek (pętla)
         if not ret:
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             continue
 
-        # Dopasuj rozdzielczość do detektora
         frame = cv2.resize(frame, (detector.frame_width, detector.frame_height))
 
-        print("\033c", end="")  # wyczyść terminal
+        print("\033c", end="")  
         start = time.time()
         result = detector.process_frame(frame)
         end = time.time()
@@ -853,7 +849,7 @@ if __name__ == "__main__":
         key = cv2.waitKey(delay_ms) & 0xFF
         if key == ord("q"):
             break
-        elif key == ord("p"):  # pauza / wznów
+        elif key == ord("p"): 
             while True:
                 k2 = cv2.waitKey(30) & 0xFF
                 if k2 == ord("p"):

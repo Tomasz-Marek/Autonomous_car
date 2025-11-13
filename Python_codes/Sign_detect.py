@@ -324,7 +324,7 @@ class SignDetector:
         output = frame.copy()
         hsv_frame = self.hsv_frame_process(frame)
 
-        detections = []  # <<< TU zbieramy wszystkie znaki
+        detections = []  
 
         for cnt in contours:
             area = cv2.contourArea(cnt)
@@ -346,7 +346,6 @@ class SignDetector:
             shape_name = None
             color_draw = (0, 255, 0)
 
-            # Basic shape classification based on vertices and circularity
             if vertices <= 6 and circularity < 0.7:
                 shape_name = "Triangle"
                 color_draw = (0, 255, 255)
@@ -377,13 +376,11 @@ class SignDetector:
 
             name, score = self.trafficsign_classifier(shape_name, dominant_color, roi)
             if name and score >= self.MIN_SCORE:
-                # rysowanie jak wcześniej
                 label = f"{name} ({score:.0f}%)"
                 cv2.drawContours(output, [approx], -1, color_draw, 2)
                 cv2.putText(output, label, (x, y - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_draw, 2)
 
-                # zapis do listy wykryć
                 detections.append({
                     "name": name,
                     "score": float(score),
