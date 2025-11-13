@@ -22,7 +22,7 @@ class SignDetector:
         # cache: folder_path -> {"des_list":..., "class_names":..., "img_list":...}
         self.databases = {}
 
-        # opcjonalne preloadowanie wszystkich grup od razu
+        # preload databases if requested
         if preload:
             self.preload_databases()
 

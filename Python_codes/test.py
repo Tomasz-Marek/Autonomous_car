@@ -4,8 +4,8 @@ from Sign_detect import SignDetector   # <-- upewnij się, że plik nazywa się 
 def main():
     # 1. Inicjalizacja detektora
     detector = SignDetector(
-        debug=False,          # ustaw True jeśli chcesz logi w konsoli
-        display=False,         # pokazuje wynikowy obraz
+        debug=True,          # ustaw True jeśli chcesz logi w konsoli
+        display=True,         # pokazuje wynikowy obraz
         base_path="sign_database",
         preload=True          # od razu ładuje całą bazę
     )
@@ -19,10 +19,11 @@ def main():
     print("[INFO] Uruchomiono kamerę. Naciśnij 'q' aby zakończyć.")
 
     while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("[WARN] Nie udało się pobrać klatki.")
-            break
+        #ret, frame = cap.read()
+        #if not ret:
+        #    print("[WARN] Nie udało się pobrać klatki.")
+        #    break
+        frame = cv2.imread("images/test2.jpg")
 
         # Opcjonalnie zmniejsz rozdzielczość (dla wydajności)
         frame = cv2.resize(frame, (640, 480))

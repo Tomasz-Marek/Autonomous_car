@@ -770,7 +770,7 @@ class LaneDetector:
         }
         return result
 
-
+"""
 # ====================== SIMPLE TEST ENTRY POINT ======================
 if __name__ == "__main__":
     img = cv2.imread("road_images/test5.jpg")
@@ -795,4 +795,74 @@ if __name__ == "__main__":
         if cv2.waitKey(30) & 0xFF == ord("q"):
             break
 
+    cv2.destroyAllWindows()
+"""
+
+# ====================== SIMPLE TEST ENTRY POINT ======================
+if __name__ == "__main__":
+    # Spróbuj otworzyć plik wideo o nazwie "test_vid" z typowymi rozszerzeniami
+    base_name = "road_images/test_vid"
+    tried = []
+    cap = None
+    for ext in ["", ".mp4", ".avi", ".mkv", ".mov"]:
+        path = base_name + ext
+        c = cv2.VideoCapture(path)
+        tried.append(path)
+        if c.isOpened():
+            cap = c
+            print(f"[INFO] Otworzono wideo: {path}")
+            break
+
+    if cap is None or not cap.isOpened():
+        raise FileNotFoundError(
+            f"Nie udało się otworzyć pliku wideo. Próbowano: {', '.join(tried)}"
+        )
+
+    detector = LaneDetector(
+        frame_width=480,
+        frame_height=240,
+        debug=True,    # trackbary do IPM i skrzyżowań
+        display=True,  # okna podglądu
+        ipm_trapezoid_init=(140, 240, 116, 240),
+    )
+
+    # Ustal opóźnienie na podstawie FPS z pliku (jeśli brak – 33 ms ~ 30 FPS)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    delay_ms = int(1000 / fps) if fps and fps > 0 else 33
+
+    quit_all = False
+    while True:
+        ret, frame = cap.read()
+
+        # Jeśli koniec pliku – cofnij na początek (pętla)
+        if not ret:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            continue
+
+        # Dopasuj rozdzielczość do detektora
+        frame = cv2.resize(frame, (detector.frame_width, detector.frame_height))
+
+        print("\033c", end="")  # wyczyść terminal
+        start = time.time()
+        result = detector.process_frame(frame)
+        end = time.time()
+
+        print(f"Czas przetwarzania klatki: {end - start:.6f} s")
+        print("Wynik:", result)
+
+        key = cv2.waitKey(delay_ms) & 0xFF
+        if key == ord("q"):
+            break
+        elif key == ord("p"):  # pauza / wznów
+            while True:
+                k2 = cv2.waitKey(30) & 0xFF
+                if k2 == ord("p"):
+                    break
+                if k2 == ord("q"):
+                    quit_all = True
+                    break
+        if quit_all:
+            break
+
+    cap.release()
     cv2.destroyAllWindows()
