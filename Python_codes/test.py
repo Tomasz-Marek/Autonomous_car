@@ -1,4 +1,7 @@
 import cv2
+import time
+import numpy as np
+from picamera2 import Picamera2
 
 from sign_detect import SignDetector
 from lane_detect import LaneDetector
@@ -7,24 +10,24 @@ from motors import MotorConfig
 
 
 def main():
-    # 1. Initialize sign detector
+
+    # --- 1. Initialize sign detector ---
     sign_detector = SignDetector(
-        debug=True,          # console logs
-        display=True,        # sign detection debug windows
+        debug=True,
+        display=True,
         base_path="sign_database",
-        preload=True         # preload all sign groups
+        preload=True
     )
 
-    # 2. Initialize lane detector
+    # --- 2. Initialize lane detector ---
     lane_detector = LaneDetector(
         frame_width=640,
         frame_height=480,
         debug=True,
         display=True,
-        # ipm_trapezoid_init left as default
     )
 
-    # 3. Initialize motor config and drive controller
+    # --- 3. Initialize motor config + drive control ---
     motor_config = MotorConfig(
         pwm_freq=5000,
         max_speed=40.0
@@ -35,52 +38,56 @@ def main():
         DEBUG=True
     )
 
-    # 4. Initialize camera (0 = default webcam / USB camera)
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("[ERROR] Camera is not available.")
-        return
+    # --- 4. Initialize Raspberry Pi Camera ---
+    print("[INFO] Initializing Raspberry Pi camera...")
 
+    picam2 = Picamera2()
+
+    config = picam2.create_video_configuration(
+        main={"size": (1280, 720), "format": "RGB888"}  # szybsza, lekka rozdzielczość
+    )
+    picam2.configure(config)
+    picam2.start()
+
+    time.sleep(1)
     print("[INFO] Camera started. Press 'q' to quit.")
 
     try:
         while True:
-            ret, frame = cap.read()
-            if not ret:
-                print("[WARN] Failed to grab frame.")
-                break
+            # --- 5. Grab frame from Pi camera ---
+            frame = picam2.capture_array()
 
-            # Optionally resize frame to match lane detector resolution
+            # Resize to lane detector input resolution
             frame = cv2.resize(frame, (640, 480))
 
-            # 5. Run detectors
+            # --- 6. Run detectors ---
             sign_result = sign_detector.detect(frame)
             lane_result = lane_detector.process_frame(frame)
 
-            # 6. High-level drive control based on lane detection
+            # --- 7. Drive control ---
             drive_controller.control_step(lane_result)
 
-            # 7. Print detected signs to console (if any)
+            # --- 8. Log detected signs ---
             detections = sign_result["detections"]
             if sign_result["detected"]:
                 print(f"[INFO] Detected {len(detections)} sign(s):")
                 for d in detections:
                     print(f"   - {d['name']} ({d['score']:.1f}%) [{d['color']} {d['shape']}]")
 
-            # 8. Show sign detector output frame (if display=True, it may already show its own windows)
+            # --- 9. Display output frame from sign detector ---
             cv2.imshow("Detected Output", sign_result["output_frame"])
 
-            # 9. Exit on 'q'
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                print("[INFO] Test finished by user.")
+            # --- 10. Quit on 'q' ---
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                print("[INFO] Exiting program.")
                 break
 
     finally:
-        # 10. Cleanup
-        cap.release()
+        # --- 11. Cleanup ---
+        picam2.stop()
         cv2.destroyAllWindows()
-        # (opcjonalnie możesz tu dodać stop silników / GPIO.cleanup(),
-        #  jeśli zaimplementujesz takie metody w MotorConfig / DriveControl)
+        # Dodatkowo możesz dodać GPIO cleanup w MotorConfig jeśli dodasz tam taką metodę.
+        print("[INFO] Program ended cleanly.")
 
 
 if __name__ == "__main__":
