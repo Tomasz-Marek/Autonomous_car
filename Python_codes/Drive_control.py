@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 from collections import deque
 
-from Motors import MotorConfig
+from motors import MotorConfig
 
 
 class DriveControl:

@@ -1,55 +1,87 @@
 import cv2
-from Sign_detect import SignDetector   # <-- upewnij się, że plik nazywa się sign_detector.py
+
+from sign_detect import SignDetector
+from lane_detect import LaneDetector
+from drive_control import DriveControl
+from motors import MotorConfig
+
 
 def main():
-    # 1. Inicjalizacja detektora
-    detector = SignDetector(
-        debug=True,          # ustaw True jeśli chcesz logi w konsoli
-        display=True,         # pokazuje wynikowy obraz
+    # 1. Initialize sign detector
+    sign_detector = SignDetector(
+        debug=True,          # console logs
+        display=True,        # sign detection debug windows
         base_path="sign_database",
-        preload=True          # od razu ładuje całą bazę
+        preload=True         # preload all sign groups
     )
 
-    # 2. Inicjalizacja kamery (0 = domyślna kamera laptopa)
+    # 2. Initialize lane detector
+    lane_detector = LaneDetector(
+        frame_width=640,
+        frame_height=480,
+        debug=True,
+        display=True,
+        # ipm_trapezoid_init left as default
+    )
+
+    # 3. Initialize motor config and drive controller
+    motor_config = MotorConfig(
+        pwm_freq=5000,
+        max_speed=40.0
+    )
+
+    drive_controller = DriveControl(
+        motor_config,
+        DEBUG=True
+    )
+
+    # 4. Initialize camera (0 = default webcam / USB camera)
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
-        print("[ERROR] Kamera nie jest dostępna.")
+        print("[ERROR] Camera is not available.")
         return
 
-    print("[INFO] Uruchomiono kamerę. Naciśnij 'q' aby zakończyć.")
+    print("[INFO] Camera started. Press 'q' to quit.")
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("[WARN] Nie udało się pobrać klatki.")
-            break
-        #frame = cv2.imread("images/test2.jpg")
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                print("[WARN] Failed to grab frame.")
+                break
 
-        # Opcjonalnie zmniejsz rozdzielczość (dla wydajności)
-        frame = cv2.resize(frame, (640, 480))
+            # Optionally resize frame to match lane detector resolution
+            frame = cv2.resize(frame, (640, 480))
 
-        # 3. Wykrywanie znaków
-        result = detector.detect(frame)
+            # 5. Run detectors
+            sign_result = sign_detector.detect(frame)
+            lane_result = lane_detector.process_frame(frame)
 
-        # 4. Wyświetl liczbę wykryć i ich nazwy w konsoli
-        detections = result["detections"]
-        if result["detected"]:
-            print(f"[INFO] Wykryto {len(detections)} znak(ów):")
-            for d in detections:
-                print(f"   - {d['name']} ({d['score']:.1f}%) [{d['color']} {d['shape']}]")
+            # 6. High-level drive control based on lane detection
+            drive_controller.control_step(lane_result)
 
-        # 5. Wyświetlanie obrazu (robione już w klasie, jeśli display=True)
-        # ale na wszelki wypadek zostawiam:
-        cv2.imshow("Detected Output", result["output_frame"])
+            # 7. Print detected signs to console (if any)
+            detections = sign_result["detections"]
+            if sign_result["detected"]:
+                print(f"[INFO] Detected {len(detections)} sign(s):")
+                for d in detections:
+                    print(f"   - {d['name']} ({d['score']:.1f}%) [{d['color']} {d['shape']}]")
 
-        # 6. Wyjście po naciśnięciu 'q'
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            print("[INFO] Zakończono test.")
-            break
+            # 8. Show sign detector output frame (if display=True, it may already show its own windows)
+            cv2.imshow("Detected Output", sign_result["output_frame"])
 
-    # 7. Zakończenie
-    cap.release()
-    cv2.destroyAllWindows()
+            # 9. Exit on 'q'
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                print("[INFO] Test finished by user.")
+                break
+
+    finally:
+        # 10. Cleanup
+        cap.release()
+        cv2.destroyAllWindows()
+        # (opcjonalnie możesz tu dodać stop silników / GPIO.cleanup(),
+        #  jeśli zaimplementujesz takie metody w MotorConfig / DriveControl)
+
 
 if __name__ == "__main__":
     main()

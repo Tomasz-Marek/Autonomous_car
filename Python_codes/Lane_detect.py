@@ -797,7 +797,7 @@ if __name__ == "__main__":
 
     cv2.destroyAllWindows()
 """
-
+"""
 # ====================== SIMPLE TEST ENTRY POINT ======================
 if __name__ == "__main__":
     base_name = "road_images/test_vid"
@@ -862,3 +862,4 @@ if __name__ == "__main__":
 
     cap.release()
     cv2.destroyAllWindows()
+"""
