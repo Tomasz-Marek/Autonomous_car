@@ -109,8 +109,23 @@ class DriveControl:
         return
     
     def fallback_step(self, lane_result: dict):
-        left_lane_ok_history = self.history["left_lane_ok"]
-        left_lane_ok_history = self.history["left_lane_ok"]
+
+        left_lane_ok_history = sum(1 for state in self.history if state["left_lane_ok"])/self.history_length
+        right_lane_ok_history = sum(1 for state in self.history if state["right_lane_ok"])/self.history_length
+        base_speed = self.BASE_SPEED * 0.60
+        steering = base_speed * 0.30
+        if left_lane_ok_history < self.Min_good_state_count and lane_result["right_lane_confidence"] > 60:   
+            left_speed = base_speed 
+            right_speed = base_speed + steering
+            self.motor.set_speeds(left_speed, right_speed)
+
+        if right_lane_ok_history < self.Min_good_state_count and lane_result["left_lane_confidence"] > 60:   
+            left_speed = base_speed + steering
+            right_speed = base_speed
+            self.motor.set_speeds(left_speed, right_speed)
+        
+
+
         return
     
     def lane_following_step(self, lane_result: dict):
