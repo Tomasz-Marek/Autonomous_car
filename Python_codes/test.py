@@ -11,7 +11,7 @@ from Motors import MotorConfig
 
 # Set this to True if you want to use fisheye calibration (undistortion)
 # Set to False if you want to use raw camera frames (no undistortion)
-USE_CALIBRATION = True
+USE_CALIBRATION = False
 
 CALIB_FILE = "camera_fisheye_calib.npz"
 

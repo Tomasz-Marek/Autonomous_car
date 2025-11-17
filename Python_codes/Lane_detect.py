@@ -50,9 +50,9 @@ class LaneDetector:
         # HSV threshold parameters for lane marking detection
         self.h_min = 0
         self.s_min = 0
-        self.v_min = 200
-        self.h_max = 179
-        self.s_max = 255
+        self.v_min = 210
+        self.h_max = 180
+        self.s_max = 30
         self.v_max = 255
 
         # Crossroad detection thresholds (will be updated by crossroad trackbars)
