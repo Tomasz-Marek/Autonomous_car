@@ -34,6 +34,7 @@ class DriveControl:
             DEBUG: If True, creates OpenCV trackbars and debug banner window.
         """
         self.DEBUG = DEBUG
+        self.manual_stop = False
 
         # Human-readable status for diagnostics / banner
         self.status_mode = "idle"        # e.g.: "lane_following - run", "fallback - stopped"
@@ -54,16 +55,16 @@ class DriveControl:
 
         # Base speed and controller gains
         self.BASE_SPEED = 30          # nominal forward speed (in percent of MAX_SPEED in MotorConfig)
-        self.MAX_STEERING = 25        # maximum steering correction (also in "speed units")
-        self.K_lateral = 1.2          # gain for lateral error
-        self.K_head = 0.6             # gain for heading/angle error
+        self.MAX_STEERING = 46        # maximum steering correction (also in "speed units")
+        self.K_lateral = 1.3          # gain for lateral error
+        self.K_head = 1.6             # gain for heading/angle error
 
         # Hysteresis thresholds for entering / exiting fallback based on lane_ok history
         self.Min_good_state_count = int(self.history_length * 0.5)   # below this → enter fallback
         self.Max_good_state_count = int(self.history_length * 0.75)  # above this → leave fallback
 
         # Lookahead on normalized lane curve: 0.0 = bottom (near vehicle), 1.0 = top (far)
-        self.y_L = 0.7  # Lookahead position on normalized lane curve (0.0 = bottom, 1.0 = top)
+        self.y_L = 0.3  # Lookahead position on normalized lane curve (0.0 = bottom, 1.0 = top)
 
         # Initialize OpenCV trackbars (debug only)
         if self.DEBUG:
@@ -383,6 +384,15 @@ class DriveControl:
              otherwise -> lane_following_step().
           7. Show status banner (DEBUG only).
         """
+        # Manual emergency stop
+        if self.manual_stop:
+            self.motor.set_speeds(0, 0)
+            self.status_mode = "manual stop"
+            self.status_msg = "STOP: MANUAL S KEY PRESSED"
+            self.status_stopped = True
+            if self.DEBUG:
+                self.show_status_banner()
+            return
         # 1. No result from detector -> emergency stop
         if lane_result is None:
             self.motor.set_speeds(0, 0)

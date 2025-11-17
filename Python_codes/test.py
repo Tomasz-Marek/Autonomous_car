@@ -111,12 +111,12 @@ def init_modules(frame_width, frame_height):
         frame_height=frame_height,
         debug=True,
         display=True,
-        ipm_trapezoid_init=(140, 240, 116, 240),
+        ipm_trapezoid_init=(215, 320, 190, 245),
     )
 
     motor_config = MotorConfig(
-        pwm_freq=5000,
-        max_speed=40.0,
+        pwm_freq=3000,
+        max_speed=100.0,
     )
 
     drive_controller = DriveControl(
@@ -178,7 +178,14 @@ def run_main_loop(picam2, lane_detector, drive_controller,
         if key == ord("q"):
             print("[INFO] Quit requested.")
             break
+        elif key == ord('s'):
+            drive_controller.manual_stop = True
+            drive_controller.motor.set_speeds(0, 0)
+            print("[MANUAL] STOP PRESSED")
 
+        elif key == ord('r'):
+            drive_controller.manual_stop = False
+            print("[MANUAL] RESUMED")
     print("[INFO] Exiting main loop.")
 
 

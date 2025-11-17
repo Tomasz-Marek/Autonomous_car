@@ -90,6 +90,63 @@ class LaneDetector:
                 self.frame_height,
             )
             self._initialize_crossroad_trackbars()
+            self._initialize_hsv_trackbars()
+
+    # ====================== TRACKBARS (HSV THRESHOLDS) ======================
+    def _initialize_hsv_trackbars(self):
+        """
+        Create window + trackbars for tuning HSV thresholds used in _threshold():
+
+            H_min, S_min, V_min
+            H_max, S_max, V_max
+        """
+        cv2.namedWindow("HSV_Thresholds")
+        cv2.resizeWindow("HSV_Thresholds", 400, 250)
+
+        # Min values
+        cv2.createTrackbar("H_min", "HSV_Thresholds", int(self.h_min), 179, self._nothing)
+        cv2.createTrackbar("S_min", "HSV_Thresholds", int(self.s_min), 255, self._nothing)
+        cv2.createTrackbar("V_min", "HSV_Thresholds", int(self.v_min), 255, self._nothing)
+
+        # Max values
+        cv2.createTrackbar("H_max", "HSV_Thresholds", int(self.h_max), 179, self._nothing)
+        cv2.createTrackbar("S_max", "HSV_Thresholds", int(self.s_max), 255, self._nothing)
+        cv2.createTrackbar("V_max", "HSV_Thresholds", int(self.v_max), 255, self._nothing)
+
+    def _update_hsv_from_trackbars(self):
+        """
+        Read HSV threshold values from trackbars (debug mode only)
+        and update:
+            h_min, s_min, v_min,
+            h_max, s_max, v_max.
+
+        Also enforces basic min/max consistency.
+        """
+        if not self.debug:
+            return
+
+        h_min = cv2.getTrackbarPos("H_min", "HSV_Thresholds")
+        s_min = cv2.getTrackbarPos("S_min", "HSV_Thresholds")
+        v_min = cv2.getTrackbarPos("V_min", "HSV_Thresholds")
+
+        h_max = cv2.getTrackbarPos("H_max", "HSV_Thresholds")
+        s_max = cv2.getTrackbarPos("S_max", "HSV_Thresholds")
+        v_max = cv2.getTrackbarPos("V_max", "HSV_Thresholds")
+
+        # Simple consistency checks: make sure min <= max - 1 whenever possible
+        if h_min > h_max - 1:
+            h_min = max(0, h_max - 1)
+        if s_min > s_max - 1:
+            s_min = max(0, s_max - 1)
+        if v_min > v_max - 1:
+            v_min = max(0, v_max - 1)
+
+        self.h_min = h_min
+        self.s_min = s_min
+        self.v_min = v_min
+        self.h_max = h_max
+        self.s_max = s_max
+        self.v_max = v_max
 
     # ====================== TRACKBARS (PERSPECTIVE) ======================
     def _initialize_perspective_trackbars(self, initial_vals, wT=480, hT=240):
@@ -625,7 +682,9 @@ class LaneDetector:
         """
         road_points = []
         h, w, c = img_bgr.shape
-
+        # Update HSV thresholds from trackbars (debug mode)
+        if self.debug:
+            self._update_hsv_from_trackbars()
         # 1. Perspective trapezoid from trackbars
         points = self._get_perspective_points_from_trackbars(w, h)
 
