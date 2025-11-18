@@ -413,7 +413,8 @@ class DriveControl:
         # 4. Check crossroad type
         crossroad_type = lane_result.get("crossroad_type", "not_detected")
         if crossroad_type != "not_detected":
-            self.crossroad_step(lane_result)
+            #self.crossroad_step(lane_result)
+            self.lane_following_step(lane_result)
             if self.DEBUG:
                 self.show_status_banner()
             return
@@ -423,7 +424,8 @@ class DriveControl:
 
         # 6. Choose control mode: fallback vs normal lane following
         if self.in_fallback or not lane_result.get("lane_ok", False):
-            self.fallback_step(lane_result)
+            #self.fallback_step(lane_result)
+            self.lane_following_step(lane_result)
         else:
             self.lane_following_step(lane_result)
 

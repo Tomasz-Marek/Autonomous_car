@@ -18,6 +18,14 @@ class SignDetector:
         self.orb = cv2.ORB_create(nfeatures=self.N_FEATURES)
         self.bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
         self.clahe = cv2.createCLAHE(clipLimit=3, tileGridSize=(8, 8))
+        
+        
+        self.canny_low = 160
+        self.canny_high = 240
+        self.min_area = 1000
+        self.approx_eps_factor = 0.012  
+
+        self.use_trackbars = True  
 
         # cache: folder_path -> {"des_list":..., "class_names":..., "img_list":...}
         self.databases = {}
@@ -25,6 +33,44 @@ class SignDetector:
         # preload databases if requested
         if preload:
             self.preload_databases()
+
+        if self.DISPLAY and self.use_trackbars:
+            self.init_trackbars()
+            
+    # =========================================
+    # --- TRACKBARY DO STROJENIA ---
+    # =========================================
+    def init_trackbars(self):
+        cv2.namedWindow("Sign Tuning", cv2.WINDOW_NORMAL)
+
+        cv2.createTrackbar("CannyLow",  "Sign Tuning", self.canny_low, 255, lambda x: None)
+        cv2.createTrackbar("CannyHigh", "Sign Tuning", self.canny_high, 255, lambda x: None)
+
+
+        cv2.createTrackbar("MinArea_x10", "Sign Tuning", int(self.min_area / 10), 1000, lambda x: None)
+
+
+        cv2.createTrackbar("Eps_x1000", "Sign Tuning", int(self.approx_eps_factor * 1000), 100, lambda x: None)
+
+    def update_params_from_trackbars(self):
+        if not (self.DISPLAY and self.use_trackbars):
+            return
+
+        low  = cv2.getTrackbarPos("CannyLow",  "Sign Tuning")
+        high = cv2.getTrackbarPos("CannyHigh", "Sign Tuning")
+        area10 = cv2.getTrackbarPos("MinArea_x10", "Sign Tuning")
+        eps1000 = cv2.getTrackbarPos("Eps_x1000", "Sign Tuning")
+
+
+        self.canny_low = max(0, min(low, 254))
+        self.canny_high = max(self.canny_low + 1, min(high, 255))
+
+        self.min_area = max(100, area10 * 10)    
+        self.approx_eps_factor = max(1, eps1000) / 1000.0  
+
+        if self.DEBUG:
+            print(f"[TB] Canny=({self.canny_low},{self.canny_high}), "
+                  f"MinArea={self.min_area}, Eps={self.approx_eps_factor:.4f}")
 
     def preload_databases(self, folders=None, verbose=True):
         """
@@ -314,12 +360,18 @@ class SignDetector:
                 ]
             }
         """
+        self.update_params_from_trackbars()
         roi = None
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         equalized = self.clahe.apply(gray)
         blur = cv2.GaussianBlur(equalized, (5, 5), 0)
-        edges = cv2.Canny(blur, 80, 170)
-
+        edges = cv2.Canny(blur, self.canny_low, self.canny_high)
+        
+        kernel = np.ones((2, 2), np.uint8)
+        edges_closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=1)
+        #edges_final = cv2.dilate(edges_closed, kernel, iterations=1)
+        edges = edges_closed
+        
         contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         output = frame.copy()
         hsv_frame = self.hsv_frame_process(frame)
@@ -328,7 +380,7 @@ class SignDetector:
 
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if area < 600:
+            if area < self.min_area:
                 continue
 
             perimeter = cv2.arcLength(cnt, True)
@@ -338,7 +390,7 @@ class SignDetector:
             if self.DEBUG:
                 print(f"[DEBUG] Contour area: {area}")
 
-            approx = cv2.approxPolyDP(cnt, 0.012 * perimeter, True)
+            approx = cv2.approxPolyDP(cnt, self.approx_eps_factor * perimeter, True)
             vertices = len(approx)
             circularity = 4 * math.pi * area / (perimeter * perimeter)
             x, y, w, h = cv2.boundingRect(approx)
@@ -346,24 +398,31 @@ class SignDetector:
             shape_name = None
             color_draw = (0, 255, 0)
 
-            if vertices <= 6 and circularity < 0.7:
+            aspect_ratio = float(w) / h if h != 0 else float('inf')
+
+
+            if vertices <= 6 and circularity < 0.65:
                 shape_name = "Triangle"
                 color_draw = (0, 255, 255)
-            elif vertices > 8 and circularity > 0.85:
-                aspect_ratio = float(w) / h if h != 0 else float('inf')
-                if 0.7 < aspect_ratio < 1.5:
-                    shape_name = "Circle"
-                    color_draw = (255, 0, 0)
-            elif vertices == 8:
-                aspect_ratio = float(w) / h if h != 0 else float('inf')
-                if 0.9 < aspect_ratio < 1.1:
-                    shape_name = "Octagon"
-                    color_draw = (255, 0, 255)
+
+
+            elif circularity > 0.70 and 0.5 < aspect_ratio < 1.6 and vertices >= 6:
+                shape_name = "Circle"
+                color_draw = (255, 0, 0)
+
+
+            elif 7 <= vertices <= 12 and 0.7 < aspect_ratio < 1.3 and circularity > 0.60:
+                shape_name = "Octagon"
+                color_draw = (255, 0, 255)
 
             if not shape_name:
                 continue
 
+            if self.DEBUG and area > self.min_area:
+                print(f"[CNT] area={area:.1f}, vert={vertices}, circ={circularity:.3f}, "
+                      f"ar={aspect_ratio:.2f}, bbox=({x},{y},{w},{h})")
             dominant_color, fraction = self.color_checking_area(hsv_frame, approx, x, y, w, h)
+            
             if not dominant_color:
                 continue
 
@@ -375,11 +434,33 @@ class SignDetector:
                 cv2.imshow("ROI", roi)
 
             name, score = self.trafficsign_classifier(shape_name, dominant_color, roi)
-            if name and score >= self.MIN_SCORE:
-                label = f"{name} ({score:.0f}%)"
+
+            if name:
+
+                label_main = f"{name} ({score:.0f}%)"
+
+
+                info_shape = f"{shape_name}, {dominant_color}"
+                info_geo   = f"A={int(area)}  W={w} H={h}"
+
+
                 cv2.drawContours(output, [approx], -1, color_draw, 2)
-                cv2.putText(output, label, (x, y - 10),
+
+
+                text_x = x
+                text_y = max(20, y - 25)  
+
+
+                cv2.putText(output, label_main, (text_x, text_y),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_draw, 2)
+
+
+                cv2.putText(output, info_shape, (text_x, text_y + 18),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_draw, 1)
+
+
+                cv2.putText(output, info_geo, (text_x, text_y + 36),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_draw, 1)
 
                 detections.append({
                     "name": name,
@@ -387,6 +468,7 @@ class SignDetector:
                     "bbox": (int(x), int(y), int(w), int(h)),
                     "shape": shape_name,
                     "color": dominant_color,
+                    "area": float(area),
                 })
 
 
