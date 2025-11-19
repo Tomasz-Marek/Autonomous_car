@@ -36,6 +36,11 @@ class SignDetector:
 
         if self.DISPLAY and self.use_trackbars:
             self.init_trackbars()
+        if self.DISPLAY:
+            cv2.namedWindow("Shapes", cv2.WINDOW_NORMAL)
+            cv2.namedWindow("Output", cv2.WINDOW_NORMAL)
+            cv2.namedWindow("Edges", cv2.WINDOW_NORMAL)
+            cv2.namedWindow("Detected ROI", cv2.WINDOW_NORMAL)
             
     # =========================================
     # --- TRACKBARY DO STROJENIA ---
@@ -319,7 +324,7 @@ class SignDetector:
         name, score, _ = self.orb_match(roi, des_list, class_names, img_list)
         return name, score
 
-    def debug_display(self, blur, edges, roi, output):
+    def debug_display(self, blur, edges, roi, output, shapes_frame=None):
         """Display debug / output windows depending on DEBUG/DISPLAY flags."""
         if not self.DISPLAY:
             return
@@ -327,6 +332,8 @@ class SignDetector:
         if self.DEBUG:
             cv2.imshow("Blurred", blur)
             cv2.imshow("Edges", edges)
+            if shapes_frame is not None:
+                cv2.imshow("Shapes", shapes_frame)   
             if roi is not None:
                 cv2.imshow("Detected ROI", roi)
             cv2.imshow("Output", output)
@@ -367,13 +374,14 @@ class SignDetector:
         blur = cv2.GaussianBlur(equalized, (5, 5), 0)
         edges = cv2.Canny(blur, self.canny_low, self.canny_high)
         
-        kernel = np.ones((2, 2), np.uint8)
+        kernel = np.ones((3, 3), np.uint8)
         edges_closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=1)
         #edges_final = cv2.dilate(edges_closed, kernel, iterations=1)
         edges = edges_closed
         
         contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         output = frame.copy()
+        shapes_frame = frame.copy()
         hsv_frame = self.hsv_frame_process(frame)
 
         detections = []  
@@ -401,29 +409,39 @@ class SignDetector:
             aspect_ratio = float(w) / h if h != 0 else float('inf')
 
 
-            if vertices <= 6 and circularity < 0.65:
+            if vertices <= 6 and circularity < 0.7:
                 shape_name = "Triangle"
                 color_draw = (0, 255, 255)
-
-
-            elif circularity > 0.70 and 0.5 < aspect_ratio < 1.6 and vertices >= 6:
-                shape_name = "Circle"
-                color_draw = (255, 0, 0)
-
-
-            elif 7 <= vertices <= 12 and 0.7 < aspect_ratio < 1.3 and circularity > 0.60:
-                shape_name = "Octagon"
-                color_draw = (255, 0, 255)
+            elif vertices > 8 and circularity > 0.85:
+                aspect_ratio = float(w) / h if h != 0 else float('inf')
+                if 0.7 < aspect_ratio < 1.5:
+                    shape_name = "Circle"
+                    color_draw = (255, 0, 0)
+            elif vertices == 8:
+                aspect_ratio = float(w) / h if h != 0 else float('inf')
+                if 0.9 < aspect_ratio < 1.1:
+                    shape_name = "Octagon"
+                    color_draw = (255, 0, 255)
 
             if not shape_name:
                 continue
 
+            if self.DEBUG:
+                cv2.drawContours(shapes_frame, [approx], -1, color_draw, 2)
+                cv2.putText(shapes_frame, shape_name, (x, y - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_draw, 2)
+            
             if self.DEBUG and area > self.min_area:
                 print(f"[CNT] area={area:.1f}, vert={vertices}, circ={circularity:.3f}, "
                       f"ar={aspect_ratio:.2f}, bbox=({x},{y},{w},{h})")
             dominant_color, fraction = self.color_checking_area(hsv_frame, approx, x, y, w, h)
             
+            if self.DEBUG:
+                print(f"[COLOR] dom={dominant_color}, frac={fraction:.2f}")
+
             if not dominant_color:
+                if self.DEBUG:
+                    print("[SKIP] No dominant color -> drop candidate")
                 continue
 
             roi = frame[y:y + h, x:x + w]
@@ -472,7 +490,7 @@ class SignDetector:
                 })
 
 
-        self.debug_display(blur, edges, roi, output)
+        self.debug_display(blur, edges, roi, output, shapes_frame)
 
         sign_info = {
             "detected": len(detections) > 0,
