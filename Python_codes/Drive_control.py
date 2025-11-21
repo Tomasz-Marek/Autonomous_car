@@ -54,17 +54,17 @@ class DriveControl:
         self.last_good_state = None  # reserved for future, not actively used yet
 
         # Base speed and controller gains
-        self.BASE_SPEED = 30          # nominal forward speed (in percent of MAX_SPEED in MotorConfig)
-        self.MAX_STEERING = 46        # maximum steering correction (also in "speed units")
-        self.K_lateral = 1.3          # gain for lateral error
-        self.K_head = 1.6             # gain for heading/angle error
+        self.BASE_SPEED = 15          # nominal forward speed (in percent of MAX_SPEED in MotorConfig)
+        self.MAX_STEERING = 20        # maximum steering correction (also in "speed units")
+        self.K_lateral = 2.3          # gain for lateral error
+        self.K_head = 1.2             # gain for heading/angle error
 
         # Hysteresis thresholds for entering / exiting fallback based on lane_ok history
         self.Min_good_state_count = int(self.history_length * 0.5)   # below this → enter fallback
         self.Max_good_state_count = int(self.history_length * 0.75)  # above this → leave fallback
 
         # Lookahead on normalized lane curve: 0.0 = bottom (near vehicle), 1.0 = top (far)
-        self.y_L = 0.3  # Lookahead position on normalized lane curve (0.0 = bottom, 1.0 = top)
+        self.y_L = 0.35  # Lookahead position on normalized lane curve (0.0 = bottom, 1.0 = top)
 
         # Initialize OpenCV trackbars (debug only)
         if self.DEBUG:
@@ -140,21 +140,21 @@ class DriveControl:
         # Max steering: 0..50
         cv2.createTrackbar(
             "MaxSteering", "Values Setup",
-            int(self.MAX_STEERING), 50,
+            int(self.MAX_STEERING), 100,
             self._nothing
         )
 
         # K_lateral in range 0.00..3.00, stored as x100
         cv2.createTrackbar(
             "K_lat x100", "Values Setup",
-            int(self.K_lateral * 100), 300,
+            int(self.K_lateral * 100), 500,
             self._nothing
         )
 
         # K_head in range 0.00..2.00, stored as x100
         cv2.createTrackbar(
             "K_head x100", "Values Setup",
-            int(self.K_head * 100), 200,
+            int(self.K_head * 100), 500,
             self._nothing
         )
 
@@ -336,10 +336,12 @@ class DriveControl:
         # Lateral error at lookahead y_L
         x_L = a * self.y_L**2 + b * self.y_L + c
         e_lat = x_L
+        e_lat *= 10
 
         # Heading error from derivative dx/dy
         dx_dy = 2 * a * self.y_L + b
         e_head = math.atan(dx_dy)
+        e_head *= 10
 
         # P-like controller on lateral and heading errors
         steering = -self.K_lateral * e_lat - self.K_head * e_head
@@ -351,14 +353,14 @@ class DriveControl:
             steering = -self.MAX_STEERING
 
         base_speed = self.BASE_SPEED
-        left_speed = base_speed + steering
-        right_speed = base_speed - steering
-
+        left_speed = base_speed - steering
+        right_speed = base_speed + steering
+        
         self.motor.set_speeds(left_speed, right_speed)
 
         if self.DEBUG:
             print(f"[LANE] e_lat={e_lat:.3f}, e_head={e_head:.3f}, steering={steering:.2f}")
-
+            print(f"left speed{left_speed:.2f} right speed{right_speed:.2f}")
         # Update status
         if left_speed == 0 and right_speed == 0:
             self.status_mode = "lane following - stopped"

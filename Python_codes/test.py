@@ -110,25 +110,25 @@ def init_modules(frame_width, frame_height):
     lane_detector = LaneDetector(
         frame_width=frame_width,
         frame_height=frame_height,
-        debug=False,
-        display=False,
-        ipm_trapezoid_init=(215, 320, 190, 245),
+        debug=True,
+        display=True,
+        ipm_trapezoid_init=(300, 320, 100, 350),
     )
     sign_detector = SignDetector(
-        debug=True,    
-        display=True,   
+        debug=False,    
+        display=False,   
         base_path='../sign_database',
-        preload=True,
+        preload=False,
     )
 
     motor_config = MotorConfig(
-        pwm_freq=3000,
+        pwm_freq=1000,
         max_speed=100.0,
     )
 
     drive_controller = DriveControl(
         motor_config=motor_config,
-        DEBUG=False,
+        DEBUG=True,
     )
 
     print("[INFO] Modules initialized (LaneDetector, DriveControl)")
