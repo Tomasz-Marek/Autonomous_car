@@ -112,7 +112,7 @@ def init_modules(frame_width, frame_height):
         frame_height=frame_height,
         debug=True,
         display=True,
-        ipm_trapezoid_init=(300, 320, 100, 350),
+        ipm_trapezoid_init=(320, 320, 320, 480),
     )
     sign_detector = SignDetector(
         debug=False,    
