@@ -344,7 +344,11 @@ class SignDetector:
     # =========================================
     # --- SHAPE DETECTION ---
     # =========================================
-
+    @staticmethod
+    def frame_roi(frame):
+        w = frame.shape[1]
+        return frame[:, w // 2:]
+    
     def detect(self, frame):
         """
         Detect traffic-sign candidate shapes on a BGR frame.
@@ -367,6 +371,7 @@ class SignDetector:
                 ]
             }
         """
+        frame = self.frame_roi(frame)
         self.update_params_from_trackbars()
         roi = None
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
