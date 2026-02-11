@@ -100,8 +100,8 @@ Multi-stage detection pipeline:
 - Mandatory signs
 
 **Output:**
--Classified sign label
--confidence score
+- Classified sign label
+- confidence score
 
 Example of traffic sign detection with contour analysis and ORB matching:
 
@@ -204,7 +204,7 @@ The project focuses not only on functionality but also on robustness under pract
   ```python
   python -m venv .venv
   source .venv/bin/activate # Linux / macOS
-  ..venv\Scripts\activate # Windows
+  .\.venv\Scripts\activate # Windows
   ```
 
 3. Install dependencies:
