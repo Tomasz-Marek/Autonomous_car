@@ -198,23 +198,23 @@ The project focuses not only on functionality but also on robustness under pract
   ```python
   git clone https://github.com/Tomasz-Marek/Autonomous_car.git
   cd CARLOS
-
+  ```
 
 2. Create and activate a virtual environment:
   ```python
   python -m venv .venv
   source .venv/bin/activate # Linux / macOS
   ..venv\Scripts\activate # Windows
-
+  ```
 
 3. Install dependencies:
   ```python
   pip install -r requirements.txt
-
+  ```
 4. Run the main control loop:
   ```python
   python Python_codes/Main.py
-
+  ```
 
 Ensure that the Raspberry Pi camera and motor driver are properly connected before execution.
 
