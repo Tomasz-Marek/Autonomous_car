@@ -41,15 +41,15 @@ CARLOS integrates:
 - Differential drive kinematics
 
 ### High-Level Pipeline
-
-Camera Frame
-↓
-Lane Detection → Steering Error
-Sign Detection → Event Info
-↓
-Drive Control (P-controller + fallback)
-↓
-Motor PWM Output
+  ```python
+  Camera Frame
+  ↓
+  Lane Detection → Steering Error
+  Sign Detection → Event Info
+  ↓
+  Drive Control (P-controller + fallback)
+  ↓
+  Motor PWM Output
 
 
 ---
