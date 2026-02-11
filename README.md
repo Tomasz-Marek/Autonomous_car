@@ -20,6 +20,16 @@ This repository contains the **complete software stack** running on the robot.
 
 ---
 
+## 🖼️ Full Platform Overview
+
+<p align="center">
+  <img src="images/carlos_full.jpg" width="600">
+</p>
+
+CARLOS autonomous mobile platform integrating vision system, control logic and differential drive hardware.
+
+---
+
 ## 🧠 System Overview
 
 CARLOS integrates:
@@ -60,6 +70,18 @@ Implemented using classical computer vision techniques (no machine learning):
 - Lane validity flag
 - Steering correction input
 
+Example of real-time lane detection with perspective transform and polynomial fitting:
+
+<p align="center">
+  <img src="images/lane_output.png" width="700">
+</p>
+
+The image above shows:
+- Bird’s-eye view transformation
+- Lane segmentation mask
+- Fitted lane polynomial
+- Center offset estimation
+
 ---
 
 ## 🚸 Traffic Sign Detection Module
@@ -77,6 +99,22 @@ Multi-stage detection pipeline:
 - Speed limits
 - Warning signs
 - Mandatory signs
+
+**Output:**
+-Classified sign label
+-confidence score
+
+Example of traffic sign detection with contour analysis and ORB matching:
+
+<p align="center">
+  <img src="images/sign_output.png" width="700">
+</p>
+
+The detection pipeline visualizes:
+- Extracted contour
+- Bounding box
+- Classified sign label
+- Confidence score
 
 ---
 
@@ -158,25 +196,25 @@ The project focuses not only on functionality but also on robustness under pract
 ## ▶ How to Run
 
 1. Clone the repository:
-
-git clone https://github.com/Tomasz-Marek/Autonomous_car.git
-cd CARLOS
+  ```python
+  git clone https://github.com/Tomasz-Marek/Autonomous_car.git
+  cd CARLOS
 
 
 2. Create and activate a virtual environment:
-
-python -m venv .venv
-source .venv/bin/activate # Linux / macOS
-..venv\Scripts\activate # Windows
+  ```python
+  python -m venv .venv
+  source .venv/bin/activate # Linux / macOS
+  ..venv\Scripts\activate # Windows
 
 
 3. Install dependencies:
-
-pip install -r requirements.txt
+  ```python
+  pip install -r requirements.txt
 
 4. Run the main control loop:
-
-python Python_codes/Main.py
+  ```python
+  python Python_codes/Main.py
 
 
 Ensure that the Raspberry Pi camera and motor driver are properly connected before execution.
