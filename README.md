@@ -23,7 +23,7 @@ This repository contains the **complete software stack** running on the robot.
 ## 🖼️ Full Platform Overview
 
 <p align="center">
-  <img src="images/carlos_full.jpg" width="600">
+  <img src="images/carlos_full.png" width="600">
 </p>
 
 CARLOS autonomous mobile platform integrating vision system, control logic and differential drive hardware.
