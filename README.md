@@ -1,183 +1,198 @@
-# 🚗 Autonomous Car Platform — Lane and Traffic Sign Detection (Work in Progress)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
----
+# 🚗 CARLOS  
+### Vision-Based Autonomous Mobile Platform  
 
-## 🖼️ Example Output
-
-| Lane Detection | Traffic Sign Detection |
-|----------------|------------------------|
-| ![Lane](images/Lane_detect_demo.png) | ![Sign](images/Sign_detect_demo.png) |
-
----
-**Status:** Development in progress  
-**Language:** Python 3.13.7  
-**Operating System:** Windows 11  
-
-This repository contains the core vision algorithms for an **autonomous car platform** that will eventually operate as a small, physical vehicle.  
-The main objective of this project is to develop a system capable of **independent movement along a simulated road**, detecting and reacting to **traffic signs** from a predefined image database.
-
-The project is developed as part of an **engineering thesis at Wrocław University of Science and Technology**.
+Real-time lane detection and traffic sign recognition system running on Raspberry Pi 4.
 
 ---
 
-## 🎯 Project Overview
+## 📌 About the Project
 
-The platform aims to:
-- Follow road lanes based on camera vision,
-- Detect and classify road signs from a live camera feed,
-- Eventually integrate both systems on a **Raspberry Pi controller** for autonomous driving.
+CARLOS (Cognitive Autonomous Road-Learning Operating System) is a small-scale autonomous mobile platform developed as an engineering thesis project.
 
-Currently, two independent modules are implemented:
+The system is designed to:
 
-| Module | Description |
-|--------|--------------|
-| **`Line_detect.py`** | Detects the center of a driving lane on a road image using perspective transform and histogram analysis. |
-| **`Sign_detect.py`** | Recognizes road signs from a live camera feed using classical computer vision (ORB descriptors, color & shape analysis). |
+- Follow a marked lane using a monocular camera  
+- Detect and classify selected traffic signs  
+- Adapt steering in real time using differential drive control  
+- Operate autonomously without human intervention  
 
-Both algorithms work **without machine learning** — the system relies solely on deterministic image processing methods.
+This repository contains the **complete software stack** running on the robot.
 
 ---
 
-## ⚙️ Features (Current State)
+## 🧠 System Overview
 
-### 🧩 Lane Detection (`Line_detect.py`)
-- Works on static road images (e.g., `road_images/road2.png`)
-- Uses **HSV thresholding** and morphological operations to isolate lane markings
-- Applies **perspective transform** to simulate a top-down view
-- Computes lane center using **histogram-based analysis**
-- Interactive configuration via **trackbars** for ROI and color thresholds
+CARLOS integrates:
 
-### 🚸 Traffic Sign Detection (`Sign_detect.py`)
-- Real-time video capture from laptop camera (via OpenCV)
-- Multi-stage detection combining:
-  1. **Edge and contour extraction**
-  2. **Shape classification** (triangle, circle, octagon)
-  3. **Dominant color detection** (HSV-based)
-  4. **ORB descriptor matching** against an image database (`sign_database`)
-- Classifies signs such as:
-  - Stop  
-  - Warning (triangular, orange)  
-  - Speed limits  
-  - Mandatory signs (blue circular)
+- Computer Vision (OpenCV-based)
+- Real-time control logic
+- PWM motor control
+- Raspberry Pi hardware interface
+- Differential drive kinematics
 
-## 📥 Inputs / 📤 Outputs
+### High-Level Pipeline
 
-**Lane detection (`Line_detect.py`):**
-- **Input:** static road image (currently `road_images/road2.png`).
-- **Processing:** HSV thresholding → perspective warp → column histogram.
-- **Output (for now):**
-  - Debug windows (`Warped`, `Warped Points`, histograms),
-  - Printed curve/center value in console (used later for steering logic).
+Camera Frame
+↓
+Lane Detection → Steering Error
+Sign Detection → Event Info
+↓
+Drive Control (P-controller + fallback)
+↓
+Motor PWM Output
 
-**Traffic sign detection (`Sign_detect.py`):**
-- **Input:** live video from laptop camera (index `0` by default).
-- **Processing:**
-  - Edge and contour detection,
-  - Shape classification (triangle / circle / octagon),
-  - Dominant color (HSV),
-  - ORB matching against image database in `sign_database/`.
-- **Output:**
-  - Live window with detected sign contour and text label (e.g. `STOP (92%)`),
-  - Optional debug windows (edges, ROI, ORB matching preview).
 
 ---
 
-## 🧠 Technologies Used
+## 🛣 Lane Detection Module
 
-- **Python 3.13.7**
+Implemented using classical computer vision techniques (no machine learning):
+
+- BGR → HSV thresholding
+- Morphological filtering
+- Perspective transform (bird’s-eye view)
+- Histogram-based lane localization
+- Polynomial fitting
+- Lateral & heading error estimation
+
+**Output:**
+- Lane center offset
+- Lane validity flag
+- Steering correction input
+
+---
+
+## 🚸 Traffic Sign Detection Module
+
+Multi-stage detection pipeline:
+
+1. Edge detection (Canny)
+2. Contour extraction
+3. Shape classification (triangle / circle / octagon)
+4. HSV dominant color filtering
+5. ORB feature matching against internal sign database
+
+**Supported classes:**
+- STOP
+- Speed limits
+- Warning signs
+- Mandatory signs
+
+---
+
+## 🎛 Control Logic
+
+The `Drive_Control` module implements:
+
+- Proportional steering controller
+- Differential speed mapping:
+
+  ```python
+  left  = base_speed - steering
+  right = base_speed + steering
+
+- Steering saturation limits
+- Emergency fallback mode when lane detection becomes unreliable
+
+## ⚙️ Hardware Platform
+
+The software runs on a fully integrated autonomous mobile platform consisting of:
+
+- **Raspberry Pi 4 Model B** – main computing unit  
+- **CSI 5MP camera with 180° wide-angle lens** – monocular vision system  
+- **Dual N20 DC gear motors (75:1)** – differential drive propulsion  
+- **Cytron MDD3A motor driver** – dual-channel H-bridge control  
+- **Differential drive configuration** – independent left/right wheel control  
+- **Separated power architecture** – independent supplies for logic and motors  
+
+The hardware architecture was designed to support real-time vision processing while maintaining stable motor control under embedded constraints.
+
+---
+
+## 🛠 Technologies Used
+
+- **Python**
 - **OpenCV**
 - **NumPy**
-- **Math**
-- **Jupyter Notebook** (for prototyping and testing)
+- **GPIO + PWM motor control**
+- **Object-Oriented Programming (modular architecture)**
+- **Real-time image processing on embedded Linux (Raspberry Pi OS)**
 
-> No machine learning or deep learning techniques are used in this project.
-
----
-
-## ⚠️ Known Limitations (WIP)
-
-- Lane detection currently works on a **single static image** only (no video yet).
-- Sign detection is tuned for a specific lighting setup and camera; thresholds may require manual tuning.
-- The traffic sign database in `sign_database/` is limited and does not cover all possible signs.
-- Control logic (steering/throttle) and Raspberry Pi integration are **not implemented yet**.
-- No automated tests yet — most validation is done visually via debug windows.
-
----
-## 📝 Changelog (recent)
-
-- 2025-11-03: Documented lane and sign detection modules, added WIP limitations.
-- 2025-11-02: Improved traffic sign classifier (shape + color → ORB group selection).
-- 2025-11-01: Initial version of lane detection on static image (`road2.png`).
+The system avoids machine learning by design and relies entirely on deterministic computer vision and control algorithms.
 
 ---
 
-## 🧩 How to Run
+## 🔬 Engineering Challenges Addressed
 
-1. Clone this repository:
-  ```
-    git clone https://github.com/Tomasz-Marek/Autonomous_car.git
-    cd Autonomous_car
-  ```
+During development, several real-world engineering challenges were identified and addressed:
+
+- Wide-angle lens distortion affecting contour-based sign detection  
+- Sensitivity of HSV segmentation to lighting conditions  
+- Real-time processing constraints on Raspberry Pi hardware  
+- Steering instability under partial lane loss  
+- Separation of perception, decision, and execution layers  
+- Power supply noise isolation between motors and logic system  
+
+The project focuses not only on functionality but also on robustness under practical embedded conditions.
+
+---
+
+## 🚀 Current Status
+
+- ✔ Fully integrated hardware + software system  
+- ✔ Real-time lane following  
+- ✔ Real-time traffic sign recognition  
+- ✔ Adaptive steering control  
+- ✔ Laboratory validation completed  
+
+### Ongoing Improvements
+
+- Crossroad detection refinement  
+- Improved fallback robustness  
+- Lens distortion correction  
+- Sign-based speed adaptation  
+- Performance optimization for higher frame rate stability  
+
+---
+
+## ▶ How to Run
+
+1. Clone the repository:
+
+git clone https://github.com/Tomasz-Marek/Autonomous_car.git
+cd CARLOS
+
 
 2. Create and activate a virtual environment:
-  ```
-    python -m venv .venv
-    .\.venv\Scripts\activate
-  ```
+
+python -m venv .venv
+source .venv/bin/activate # Linux / macOS
+..venv\Scripts\activate # Windows
+
 
 3. Install dependencies:
-  ```
-    pip install -r requirements.txt
-  ```
 
-4. Run each module separately:
-  ```
-    # For lane detection (static image)
-    python Python_codes/Line_detect.py
+pip install -r requirements.txt
 
-    # For traffic sign detection (camera)
-    python Python_codes/Sign_detect.py
-  ```
+4. Run the main control loop:
 
-⚠️ Make sure your webcam is connected for sign detection.
+python Python_codes/Main.py
+
+
+Ensure that the Raspberry Pi camera and motor driver are properly connected before execution.
 
 ---
 
-## 🗂️ Repository Structure
-```
-Autonomous_car/
-├── Python_codes/
-│ ├── Line_detect.py
-│ ├── Sign_detect.py
-├── road_images/
-│ ├── road2.png
-├── sign_database/
-│ ├── stop_signs/
-│ ├── mandatory_signs/
-│ ├── warning_signs/
-│ ├── speed_limits_signs/
-├── README.md
-├── requirements.txt
-```
+## 🎓 Background
+
+Developed as part of an engineering thesis focused on:
+
+> Vision-based autonomous navigation and adaptive control in small-scale mobile platforms.
+
+The project integrates mechanical design, embedded electronics, real-time computer vision, and control theory into a cohesive autonomous system.
+
 ---
 
-## 📊 Project Status
+## 📄 License
 
-> **Current Stage:** Feature development  
-> **Next Milestone:** Lane detection code expansion - crossroads detecting  
-
-
-### 🛣️ Project Roadmap (WIP)
-
-- [x] 3D printed Car design
-- [x] Electrical components selection
-- [x] Lane detection using static image
-- [x] Traffic sign detection using camera
-- [x] Left and right lane detection confidance
-- [ ] Crossroads detection in Lane detection code
-- [ ] Integrate both systems into one module
-- [ ] Implement Raspberry Pi support (camera + motor control)
-- [ ] Add basic PID steering logic and sign queue
-- [ ] Prepare final demo with autonomous movement
-
-
+MIT License

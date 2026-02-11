@@ -6,6 +6,7 @@ from picamera2 import Picamera2
 from Lane_detect import LaneDetector
 from Drive_control import DriveControl
 from Motors import MotorConfig
+from Sign_detect import SignDetector
 
 # ================== CONFIG ==================
 
@@ -111,11 +112,17 @@ def init_modules(frame_width, frame_height):
         frame_height=frame_height,
         debug=True,
         display=True,
-        ipm_trapezoid_init=(215, 320, 190, 245),
+        ipm_trapezoid_init=(320, 320, 320, 480),
+    )
+    sign_detector = SignDetector(
+        debug=False,    
+        display=False,   
+        base_path='../sign_database',
+        preload=False,
     )
 
     motor_config = MotorConfig(
-        pwm_freq=3000,
+        pwm_freq=1000,
         max_speed=100.0,
     )
 
@@ -125,12 +132,12 @@ def init_modules(frame_width, frame_height):
     )
 
     print("[INFO] Modules initialized (LaneDetector, DriveControl)")
-    return lane_detector, drive_controller
+    return lane_detector,sign_detector, drive_controller
 
 
 # ----------------- Main processing loop ----------------- #
 
-def run_main_loop(picam2, lane_detector, drive_controller,
+def run_main_loop(picam2, lane_detector,sign_detector, drive_controller,
                   map1=None, map2=None, show_debug=True):
     """
     Main loop: capture frame, optionally undistort,
@@ -141,8 +148,11 @@ def run_main_loop(picam2, lane_detector, drive_controller,
     use_undistort = (map1 is not None) and (map2 is not None)
     print("[INFO] Main loop started. Press 'q' to quit.")
     print(f"[INFO] Undistortion enabled: {use_undistort}")
-
+    
+    frame_idx = 0
+    
     while True:
+        frame_idx += 1
         # 1) Capture RGB frame from Picamera2
         frame_bgr = picam2.capture_array()
 
@@ -167,7 +177,9 @@ def run_main_loop(picam2, lane_detector, drive_controller,
 
         # 5) Drive control based on lane detection result
         drive_controller.control_step(lane_result)
-
+        if frame_idx % 3 == 0:
+            sign_info = sign_detector.detect(frame_proc)
+            cv2.imshow("Traffic signs", sign_info["output_frame"])
         # 6) Optional debug windows
         if show_debug:
             cv2.imshow("Original (BGR)", frame_bgr)
@@ -185,6 +197,7 @@ def run_main_loop(picam2, lane_detector, drive_controller,
 
         elif key == ord('r'):
             drive_controller.manual_stop = False
+            drive_controller.motor.set_speeds(30, 30)
             print("[MANUAL] RESUMED")
     print("[INFO] Exiting main loop.")
 
@@ -220,17 +233,18 @@ def main():
 
     # 4) Init modules (lane detection + drive)
     width, height = cam_dim
-    lane_detector, drive_controller = init_modules(width, height)
+    lane_detector, sign_detector, drive_controller = init_modules(width, height)
 
     # 5) Run main loop
     try:
         run_main_loop(
             picam2=picam2,
             lane_detector=lane_detector,
+            sign_detector=sign_detector,
             drive_controller=drive_controller,
             map1=map1,
             map2=map2,
-            show_debug=True,
+            show_debug=False,
         )
     finally:
         picam2.stop()

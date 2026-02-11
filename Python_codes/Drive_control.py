@@ -1,6 +1,7 @@
 import math
 import cv2
 import numpy as np
+import time
 from collections import deque
 
 from Motors import MotorConfig
@@ -35,7 +36,7 @@ class DriveControl:
         """
         self.DEBUG = DEBUG
         self.manual_stop = False
-
+        
         # Human-readable status for diagnostics / banner
         self.status_mode = "idle"        # e.g.: "lane_following - run", "fallback - stopped"
         self.status_msg = ""             # detailed status message
@@ -52,19 +53,24 @@ class DriveControl:
         # Fallback state flags
         self.in_fallback = False
         self.last_good_state = None  # reserved for future, not actively used yet
+        self.fallback_request = False
+        self.fallback_request_time = None
+        self.fallback_start_time = None
 
+        self.FALLBACK_ENTER_DELAY = 3.5
+        self.FALLBACK_EXIT_DELAY = 4.0
         # Base speed and controller gains
-        self.BASE_SPEED = 30          # nominal forward speed (in percent of MAX_SPEED in MotorConfig)
-        self.MAX_STEERING = 46        # maximum steering correction (also in "speed units")
-        self.K_lateral = 1.3          # gain for lateral error
-        self.K_head = 1.6             # gain for heading/angle error
+        self.BASE_SPEED = 15          # nominal forward speed (in percent of MAX_SPEED in MotorConfig)
+        self.MAX_STEERING = 8         # maximum steering correction (also in "speed units")
+        self.K_lateral = 2.2          # gain for lateral error
+        self.K_head = 2.5             # gain for heading/angle error
 
         # Hysteresis thresholds for entering / exiting fallback based on lane_ok history
-        self.Min_good_state_count = int(self.history_length * 0.5)   # below this → enter fallback
+        self.Min_good_state_count = int(self.history_length * 0.6)   # below this → enter fallback
         self.Max_good_state_count = int(self.history_length * 0.75)  # above this → leave fallback
 
         # Lookahead on normalized lane curve: 0.0 = bottom (near vehicle), 1.0 = top (far)
-        self.y_L = 0.3  # Lookahead position on normalized lane curve (0.0 = bottom, 1.0 = top)
+        self.y_L = 0.0  # Lookahead position on normalized lane curve (0.0 = bottom, 1.0 = top)
 
         # Initialize OpenCV trackbars (debug only)
         if self.DEBUG:
@@ -140,21 +146,21 @@ class DriveControl:
         # Max steering: 0..50
         cv2.createTrackbar(
             "MaxSteering", "Values Setup",
-            int(self.MAX_STEERING), 50,
+            int(self.MAX_STEERING), 100,
             self._nothing
         )
 
         # K_lateral in range 0.00..3.00, stored as x100
         cv2.createTrackbar(
             "K_lat x100", "Values Setup",
-            int(self.K_lateral * 100), 300,
+            int(self.K_lateral * 100), 500,
             self._nothing
         )
 
         # K_head in range 0.00..2.00, stored as x100
         cv2.createTrackbar(
             "K_head x100", "Values Setup",
-            int(self.K_head * 100), 200,
+            int(self.K_head * 100), 500,
             self._nothing
         )
 
@@ -215,22 +221,41 @@ class DriveControl:
             self.last_good_state = history_result
 
     def update_fallback(self):
-        """
-        Decide whether to enter or exit fallback mode based on lane_ok history.
-
-        Uses hysteresis:
-          - if good detections < Min_good_state_count -> enter fallback.
-          - if good detections > Max_good_state_count -> exit fallback.
-        """
         if len(self.history) < self.history_length:
-            # Not enough data yet to make a reliable decision
             return
 
+        now = time.time()
         good_state_count = sum(1 for state in self.history if state["lane_ok"])
-        if good_state_count < self.Min_good_state_count:
-            self.in_fallback = True
-        elif good_state_count > self.Max_good_state_count:
-            self.in_fallback = False
+
+        want_fallback = good_state_count < self.Min_good_state_count
+
+        if want_fallback:
+            if not self.fallback_request:
+                self.fallback_request = True
+                self.fallback_request_time = now
+
+            if (not self.in_fallback and
+                self.fallback_request_time is not None and
+                (now - self.fallback_request_time) >= self.FALLBACK_ENTER_DELAY):
+                self.in_fallback = True
+                self.fallback_start_time = now
+        else:
+            self.fallback_request = False
+            self.fallback_request_time = None
+
+            if self.in_fallback and good_state_count > self.Max_good_state_count:
+                if self.fallback_start_time is None:
+                    self.in_fallback = False
+                    self.fallback_start_time = None
+                else:
+                    if (now - self.fallback_start_time) >= self.FALLBACK_EXIT_DELAY:
+                        self.in_fallback = False
+                        self.fallback_start_time = None
+
+        if not self.in_fallback and not want_fallback:
+            self.fallback_request = False
+            self.fallback_request_time = None
+
 
     # ====================== CROSSROAD HANDLING (PLACEHOLDER) ======================
     def crossroad_step(self, lane_result: dict):
@@ -257,7 +282,7 @@ class DriveControl:
           - If both sides have very low confidence -> stop the vehicle.
         """
         base_speed = self.BASE_SPEED * 0.6
-        turn_amount = self.MAX_STEERING * 0.5  # 50% of maximum steering
+        turn_amount = self.MAX_STEERING * 0.3  # 50% of maximum steering
 
         left_ok = bool(lane_result.get("left_lane_ok"))
         right_ok = bool(lane_result.get("right_lane_ok"))
@@ -336,13 +361,15 @@ class DriveControl:
         # Lateral error at lookahead y_L
         x_L = a * self.y_L**2 + b * self.y_L + c
         e_lat = x_L
+        e_lat *= 10
 
         # Heading error from derivative dx/dy
         dx_dy = 2 * a * self.y_L + b
         e_head = math.atan(dx_dy)
+        e_head *= 10
 
         # P-like controller on lateral and heading errors
-        steering = -self.K_lateral * e_lat - self.K_head * e_head
+        steering = -self.K_lateral * e_lat + self.K_head * e_head
 
         # Saturate steering to allowed range
         if steering > self.MAX_STEERING:
@@ -351,14 +378,14 @@ class DriveControl:
             steering = -self.MAX_STEERING
 
         base_speed = self.BASE_SPEED
-        left_speed = base_speed + steering
-        right_speed = base_speed - steering
-
+        left_speed = base_speed - steering
+        right_speed = base_speed + steering
+        
         self.motor.set_speeds(left_speed, right_speed)
 
         if self.DEBUG:
             print(f"[LANE] e_lat={e_lat:.3f}, e_head={e_head:.3f}, steering={steering:.2f}")
-
+            print(f"left speed{left_speed:.2f} right speed{right_speed:.2f}")
         # Update status
         if left_speed == 0 and right_speed == 0:
             self.status_mode = "lane following - stopped"
@@ -413,7 +440,8 @@ class DriveControl:
         # 4. Check crossroad type
         crossroad_type = lane_result.get("crossroad_type", "not_detected")
         if crossroad_type != "not_detected":
-            self.crossroad_step(lane_result)
+            #self.crossroad_step(lane_result)
+            self.lane_following_step(lane_result)
             if self.DEBUG:
                 self.show_status_banner()
             return
@@ -422,10 +450,25 @@ class DriveControl:
         self.update_fallback()
 
         # 6. Choose control mode: fallback vs normal lane following
-        if self.in_fallback or not lane_result.get("lane_ok", False):
-            self.fallback_step(lane_result)
+        now = time.time()
+        lane_ok = lane_result.get("lane_ok", False)
+
+        if self.in_fallback:
+            fallback_duration = 0.0
+            if self.fallback_start_time is not None:
+                fallback_duration = now - self.fallback_start_time
+
+            if fallback_duration >= self.FALLBACK_ENTER_DELAY:
+                #self.fallback_step(lane_result)
+                self.lane_following_step(lane_result)
+            else:
+                self.lane_following_step(lane_result)
         else:
-            self.lane_following_step(lane_result)
+            if lane_ok:
+                self.lane_following_step(lane_result)
+            else:
+                self.lane_following_step(lane_result)
+
 
         # 7. Show status banner in debug mode
         if self.DEBUG:
